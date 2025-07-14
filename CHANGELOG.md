@@ -1,6 +1,9 @@
 # Change Log
 
-All notable changes to the "visual-foxpro-compiler" extension will be documented in this file.
+
+## [1.0.9]
+
+- bug fix: Errors were not displayed for files with names in non-lowercase letters
 
 ## [1.0.4]
 

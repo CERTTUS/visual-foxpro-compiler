@@ -11,18 +11,18 @@ export function activate(context: vscode.ExtensionContext) {
     const outputChannel = vscode.window.createOutputChannel('Visual FoxPro Compiler');
 
     let disposable = vscode.workspace.onDidSaveTextDocument((document) => {
-        if (!document.fileName.endsWith('.prg')) {
+        if (!document.fileName.toLowerCase().endsWith('.prg')) {
             return;
         }
 
         console.log(`Saved file: ${document.fileName}`);
         const filePath = document.fileName;
         const compilerPath = path.join(context.extensionPath, 'bin', 'visual-foxpro-compiler.exe');
-        const errorFilePath = path.join(path.dirname(filePath), path.basename(filePath, '.prg') + '.err');
+        const errorFilePath = path.format({ ...path.parse(filePath), base: undefined, ext: '.err' });
 
         execFile(compilerPath, [filePath], async (error, stdout, stderr) => {
             // Registrar en el canal de salida
-            outputChannel.appendLine(`Compile ${path.basename(filePath)}:`);
+            outputChannel.appendLine(`Compile ${filePath}:`);
 
             // Manejar errores del ejecutable
             if (error) {
@@ -38,7 +38,7 @@ export function activate(context: vscode.ExtensionContext) {
             // Verificar si existe el archivo .err
             if (fs.existsSync(errorFilePath)) {
                 try {
-                    vscode.window.setStatusBarMessage('Compilation error(s) found!',5000);
+                    vscode.window.setStatusBarMessage('Compilation error(s) found!', 5000);
                     // Registrar en el canal de salida
                     outputChannel.appendLine(`Compilation error:`);
                     outputChannel.appendLine(fs.readFileSync(errorFilePath, 'utf8'));
@@ -57,10 +57,10 @@ export function activate(context: vscode.ExtensionContext) {
                 }
             } else {
                 // Compilación exitosa
-                console.log('File Compiled OK!',5000);
+                console.log('File Compiled OK!', 5000);
                 outputChannel.appendLine('File compiled ok');
                 outputChannel.appendLine('---');
-                vscode.window.setStatusBarMessage('File Compiled Ok',10000);
+                vscode.window.setStatusBarMessage('File Compiled Ok', 10000);
             }
         });
     });

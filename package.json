@@ -1,8 +1,8 @@
 {
   "name": "visual-foxpro-compiler",
   "displayName": "Visual Foxpro Prg compiler",
-  "description": "Automatically compiles prg files on save",
-  "version": "1.0.5",
+  "description": "Compiles prg files on save",
+  "version": "1.0.9",
   "publisher": "nFox",
   "author": "Marco Plaza",
   "icon": "images/nfoxLogo.png",
@@ -54,7 +54,7 @@
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",
-    "@types/mocha": "^10.0.7",
+    "@types/mocha": "^10.0.8",
     "@types/node": "20.x",
     "@typescript-eslint/eslint-plugin": "^7.14.1",
     "@typescript-eslint/parser": "^7.11.0",
