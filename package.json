@@ -1,8 +1,8 @@
 {
   "name": "visual-foxpro-compiler",
   "displayName": "Visual Foxpro Prg compiler",
-  "description": "Compiles prg files on save",
-  "version": "1.0.9",
+  "description": "Compiles PRG on save. For UTF-8 files: creates temp .pr2 (Windows-1252), compiles it, then deletes temp. Original stays intact.",
+  "version": "1.0.13",
   "publisher": "nFox",
   "author": "Marco Plaza",
   "icon": "images/nfoxLogo.png",
@@ -16,10 +16,20 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:foxpro"
+    "*"
   ],
   "contributes": {
-    "languages": [
+  "configuration": {
+    "title": "Visual FoxPro Compiler",
+    "properties": {
+      "visualFoxproCompiler.convertEncodingBeforeCompile": {
+        "type": "boolean",
+        "default": true,
+        "description": "Convert UTF-8 to Windows-1252 before compiling if needed (only compiles on success)"
+      }
+    }
+  },
+  "languages": [
       {
         "id": "foxpro",
         "extensions": [
@@ -51,6 +61,9 @@
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "vscode-test"
+  },
+  "dependencies": {
+    "iconv-lite": "^0.6.3"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",
