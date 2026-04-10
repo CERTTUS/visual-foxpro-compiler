@@ -1,12 +1,14 @@
+# Compilador Visual FoxPro (PR2)
 
-# Visual Foxpro PRG Compiler
+Ao salvar um arquivo **`.pr2`**, a extensão gera o **`.prg`** com o mesmo nome (opcionalmente convertendo de UTF-8 para Windows-1252) e compila para **`.FXP`**.
 
-Compiles Visual FoxPro .prg files automatically on save
+![Captura do compilador](image1.png)
 
-Please make a donation! Contribute with new FoxPro extensions for VS Code!
+## Configuração
 
-[![Donate](https://www.paypalobjects.com/webstatic/en_US/i/buttons/PP_logo_h_100x26.png)](https://www.paypal.com/ncp/payment/BZ54XRMSN3J3W)
+- **visualFoxproCompiler.convertEncodingBeforeCompile** — Se ativado, o conteúdo UTF-8 do `.pr2` é gravado no `.prg` em Windows-1252. Se desativado, os bytes são copiados sem conversão.
 
-![Descripción](image1.png)
+## Requisitos
 
-[GitHub/nfoxdev](https://github.com/nfoxdev) - Marco Plaza, 2025
+- Windows (win32)
+- Visual FoxPro 9 (binários do compilador incluídos na extensão)

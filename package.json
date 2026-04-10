@@ -1,9 +1,9 @@
 {
   "name": "visual-foxpro-compiler",
-  "displayName": "Visual Foxpro Prg compiler",
-  "description": "Compiles PRG on save. For UTF-8 files: creates temp .pr2 (Windows-1252), compiles it, then deletes temp. Original stays intact.",
-  "version": "1.0.13",
-  "publisher": "nFox",
+  "displayName": "Visual Foxpro PR2 compiler",
+  "description": "Ao salvar um .pr2: gera o .prg com o mesmo nome (UTF-8 para Windows-1252, se ativado) e compila para .FXP.",
+  "version": "1.0.19",
+  "publisher": "vfcompiler",
   "author": "Marco Plaza",
   "icon": "images/nfoxLogo.png",
   "engines": {
@@ -16,7 +16,7 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "*"
+    "onLanguage:foxpro"
   ],
   "contributes": {
   "configuration": {
@@ -25,7 +25,7 @@
       "visualFoxproCompiler.convertEncodingBeforeCompile": {
         "type": "boolean",
         "default": true,
-        "description": "Convert UTF-8 to Windows-1252 before compiling if needed (only compiles on success)"
+        "description": "Ao salvar .pr2: converter UTF-8 para Windows-1252 no .prg gerado. Se desativado, copia os bytes sem alterar."
       }
     }
   },
@@ -33,7 +33,8 @@
       {
         "id": "foxpro",
         "extensions": [
-          ".prg"
+          ".prg",
+          ".pr2"
         ],
         "aliases": [
           "Visual FoxPro",
@@ -60,7 +61,8 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "vsix": "npm run compile && vsce package"
   },
   "dependencies": {
     "iconv-lite": "^0.6.3"
@@ -74,6 +76,7 @@
     "eslint": "^8.57.0",
     "typescript": "^5.4.5",
     "@vscode/test-cli": "^0.0.9",
-    "@vscode/test-electron": "^2.4.0"
+    "@vscode/test-electron": "^2.4.0",
+    "@vscode/vsce": "^3.2.2"
   }
 }
