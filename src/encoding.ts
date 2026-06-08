@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as iconv from 'iconv-lite';
 
 /** Indica se o buffer é UTF-8 válido (com ou sem BOM UTF-8). */
-function isUtf8(buffer: Buffer): boolean {
+export function isUtf8(buffer: Buffer): boolean {
     if (buffer.length >= 3 && buffer[0] === 0xEF && buffer[1] === 0xBB && buffer[2] === 0xBF) {
         return true;
     }
