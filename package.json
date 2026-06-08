@@ -1,8 +1,8 @@
 {
   "name": "visual-foxpro-compiler",
   "displayName": "Visual Foxpro PR2 compiler",
-  "description": "Ao salvar um .pr2: gera o .prg com o mesmo nome (UTF-8 para Windows-1252, se ativado) e compila para .FXP.",
-  "version": "1.0.19",
+  "description": "Ao salvar um .pr2: gera o .prg (UTF-8 para Windows-1252, se ativado) e compila para .FXP. Ao salvar .sc2/.vc2/.fr2/.lb2/.mn2/.pj2/.dc2: gera os binários VFP (PRG2BIN) via FoxBin2Prg embarcado.",
+  "version": "1.1.3",
   "publisher": "vfcompiler",
   "author": "Marco Plaza",
   "icon": "images/nfoxLogo.png",
@@ -19,22 +19,63 @@
     "onLanguage:foxpro"
   ],
   "contributes": {
-  "configuration": {
-    "title": "Visual FoxPro Compiler",
-    "properties": {
-      "visualFoxproCompiler.convertEncodingBeforeCompile": {
-        "type": "boolean",
-        "default": true,
-        "description": "Ao salvar .pr2: converter UTF-8 para Windows-1252 no .prg gerado. Se desativado, copia os bytes sem alterar."
+    "configuration": {
+      "title": "Visual FoxPro Compiler",
+      "properties": {
+        "visualFoxproCompiler.convertEncodingBeforeCompile": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ao salvar .pr2: converter UTF-8 para Windows-1252 no .prg gerado. Se desativado, copia os bytes sem alterar."
+        },
+        "visualFoxproCompiler.enableFoxBin2Prg": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ao salvar arquivos de texto FoxBin2Prg (.sc2/.vc2/.fr2/.lb2/.mn2/.pj2/.dc2): gerar os binários VFP correspondentes (PRG2BIN) usando o VFP9 instalado. Requer Visual FoxPro 9 na máquina."
+        },
+        "visualFoxproCompiler.foxBin2PrgUtf8": {
+          "type": "boolean",
+          "default": true,
+          "description": "Tratar os arquivos de texto FoxBin2Prg como UTF-8: converte para Windows-1252 antes do PRG2BIN (e mantém o arquivo em UTF-8 no disco). Se desativado, assume que já estão em Windows-1252."
+        },
+        "visualFoxproCompiler.confirmBuildRepository": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Pedir confirmação antes de **compilar todo o repositório** (a ação sobrescreve os binários existentes).\n\n▶ [Compilar todo o repositório agora](command:visualFoxproCompiler.buildWorkspace)\n\nGera os binários (PRG/FXP e SCX/VCX/FRX…) a partir de **todos** os fontes do repositório aberto. Útil após clonar um repositório apenas com os fontes. Requer Visual FoxPro 9 instalado."
+        },
+        "visualFoxproCompiler.vcxBuildOrder": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "vclFormularios",
+            "vclComponentesBasicos",
+            "vclComponentesIntegrados"
+          ],
+          "markdownDescription": "Ordem de compilação das bibliotecas de classes (VC2), por nome (sem extensão). Ao compilar o repositório, as VC2 são geradas antes das SC2 (formulários) e, entre si, nesta ordem; as demais VC2 seguem em ordem alfabética. Use os nomes das bibliotecas, ex.: `vclFormularios`, `vclComponentesBasicos`, `vclComponentesIntegrados`."
+        }
       }
-    }
-  },
-  "languages": [
+    },
+    "commands": [
+      {
+        "command": "visualFoxproCompiler.buildWorkspace",
+        "title": "Compilar todo o repositório (gerar binários)",
+        "category": "Visual FoxPro"
+      }
+    ],
+    "languages": [
       {
         "id": "foxpro",
         "extensions": [
           ".prg",
-          ".pr2"
+          ".pr2",
+          ".sc2",
+          ".vc2",
+          ".fr2",
+          ".lb2",
+          ".mn2",
+          ".pj2",
+          ".dc2"
         ],
         "aliases": [
           "Visual FoxPro",
