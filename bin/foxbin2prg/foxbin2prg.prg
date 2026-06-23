@@ -7754,6 +7754,29 @@ Define Class c_conversor_base As Custom
 
 
 
+	*---------------------------------------------------------------------------------------------------
+	*  readSourceText (CERTTUS) - Le um arquivo de texto fonte (PRG2BIN) e, se estiver em UTF-8,
+	*  converte EM MEMORIA para o codepage atual do VFP (ex.: Windows-1252). Deteccao por BOM UTF-8
+	*  ou round-trip estavel (UTF-8 <-> single-byte). Windows-1252/ANSI e ASCII passam inalterados.
+	*  STRCONV: 11 = UTF-8 -> single-byte (codepage atual) ; 9 = single-byte -> UTF-8.
+	*---------------------------------------------------------------------------------------------------
+	Procedure readSourceText( tcFile )
+		Local lcRaw
+		lcRaw = Filetostr( m.tcFile )
+		If Len( m.lcRaw ) = 0
+			Return m.lcRaw
+		Endif
+		*-- BOM UTF-8 (EF BB BF): remove o BOM e converte para o codepage atual.
+		If Left( m.lcRaw, 3 ) == ( Chr(239) + Chr(187) + Chr(191) )
+			Return Strconv( Substr( m.lcRaw, 4 ), 11 )
+		Endif
+		*-- Sem BOM: so converte se o conteudo for UTF-8 valido (round-trip estavel).
+		If Strconv( Strconv( m.lcRaw, 11 ), 9 ) == m.lcRaw
+			Return Strconv( m.lcRaw, 11 )
+		Endif
+		Return m.lcRaw
+	Endproc
+
 	Procedure Init
 		Local lcSys16, lnPosProg
 
@@ -12100,7 +12123,7 @@ Define Class c_conversor_prg_a_vcx As c_conversor_prg_a_bin
 							AND Empty(toFoxBin2Prg.c_ClassToConvert)
 
 						If toFoxBin2Prg.n_RedirectClassType = 0 && Redireccionar todas las clases
-							C_FB2PRG_CODE		= Filetostr( .c_InputFile )
+							C_FB2PRG_CODE		= This.readSourceText( .c_InputFile )
 
 							lnCodeLines			= Alines( laCodeLines, C_FB2PRG_CODE )
 
@@ -12185,7 +12208,7 @@ Define Class c_conversor_prg_a_vcx As c_conversor_prg_a_bin
 
 							If toFoxBin2Prg.l_ProcessFiles Then
 								toFoxBin2Prg.normalizeFileCapitalization( .T., lcInputFile_Class )
-								C_FB2PRG_CODE	= C_FB2PRG_CODE + CR_LF + Filetostr( lcInputFile_Class )
+								C_FB2PRG_CODE	= C_FB2PRG_CODE + CR_LF + This.readSourceText( lcInputFile_Class )
 							Endif
 						Endfor
 
@@ -12194,7 +12217,7 @@ Define Class c_conversor_prg_a_vcx As c_conversor_prg_a_bin
 *-- No es clase por archivo, o no se quiere redireccionar a Main, o se usó
 *-- la sintaxis "classlib.vcx::classname::import"
 						If toFoxBin2Prg.l_ProcessFiles Then
-							C_FB2PRG_CODE		= Filetostr( .c_InputFile )
+							C_FB2PRG_CODE		= This.readSourceText( .c_InputFile )
 							lnCodeLines			= Alines( laCodeLines, C_FB2PRG_CODE )
 
 							.updateProgressbar( 'Identifying Header Blocks...', 1, lnCodeLines, 1 )
@@ -12681,7 +12704,7 @@ Define Class c_conversor_prg_a_scx As c_conversor_prg_a_bin
 					lnIDInputFile		= toFoxBin2Prg.n_ProcessedFiles
 
 					If toFoxBin2Prg.n_UseFormPerFile > 0 And toFoxBin2Prg.l_RedirectFormPerFileToMain
-						C_FB2PRG_CODE		= Filetostr( .c_InputFile )
+						C_FB2PRG_CODE		= This.readSourceText( .c_InputFile )
 
 						lnCodeLines			= Alines( laCodeLines, C_FB2PRG_CODE )
 
@@ -12738,13 +12761,13 @@ Define Class c_conversor_prg_a_scx As c_conversor_prg_a_bin
 							Endif
 
 							toFoxBin2Prg.normalizeFileCapitalization( .T., lcInputFile_Form )
-							C_FB2PRG_CODE	= C_FB2PRG_CODE + CR_LF + Filetostr( lcInputFile_Form )
+							C_FB2PRG_CODE	= C_FB2PRG_CODE + CR_LF + This.readSourceText( lcInputFile_Form )
 						Endfor
 
 						lnCodeLines			= Alines( laCodeLines, C_FB2PRG_CODE )
 					Else
 *-- No es clase por archivo, o no se quiere redireccionar a Main.
-						C_FB2PRG_CODE		= Filetostr( .c_InputFile )
+						C_FB2PRG_CODE		= This.readSourceText( .c_InputFile )
 						lnCodeLines			= Alines( laCodeLines, C_FB2PRG_CODE )
 
 						.updateProgressbar( 'Identifying Header Blocks...', 1, lnCodeLines, 1 )
@@ -13105,7 +13128,7 @@ Define Class c_conversor_prg_a_pjx As c_conversor_prg_a_bin
 						Exit	&& Si se indicó no procesar, se sale aquí. (Modo de simulación)
 					Endif
 
-					C_FB2PRG_CODE		= Filetostr( .c_InputFile )
+					C_FB2PRG_CODE		= This.readSourceText( .c_InputFile )
 					lnCodeLines			= Alines( laCodeLines, C_FB2PRG_CODE )
 
 *-- Identifico los TEXT/ENDTEXT, #IF .F./#ENDIF
@@ -13951,7 +13974,7 @@ Define Class c_conversor_prg_a_frx As c_conversor_prg_a_bin
 						Exit	&& Si se indicó no procesar, se sale aquí. (Modo de simulación)
 					Endif
 
-					C_FB2PRG_CODE		= Filetostr( .c_InputFile )
+					C_FB2PRG_CODE		= This.readSourceText( .c_InputFile )
 					lnCodeLines			= Alines( laCodeLines, C_FB2PRG_CODE )
 
 					.createReport('CURSOR',toReport)
@@ -14463,7 +14486,7 @@ Define Class c_conversor_prg_a_dbf As c_conversor_prg_a_bin
 						Exit	&& Si se indicó no procesar, se sale aquí. (Modo de simulación)
 					Endif
 
-					C_FB2PRG_CODE		= Filetostr( .c_InputFile )
+					C_FB2PRG_CODE		= This.readSourceText( .c_InputFile )
 					lnCodeLines			= Alines( laCodeLines, C_FB2PRG_CODE )
 
 					toFoxBin2Prg.doBackup( .F., .T., '', '', '' )
@@ -14922,7 +14945,7 @@ Define Class c_conversor_prg_a_dbc As c_conversor_prg_a_bin
 					lnIDInputFile		= toFoxBin2Prg.n_ProcessedFiles
 
 					If toFoxBin2Prg.n_UseFilesPerDBC > 0 And toFoxBin2Prg.l_RedirectFilePerDBCToMain
-						C_FB2PRG_CODE		= Filetostr( .c_InputFile )
+						C_FB2PRG_CODE		= This.readSourceText( .c_InputFile )
 						lnCodeLines			= Alines( laCodeLines, C_FB2PRG_CODE )
 						C_FB2PRG_CODE		= ''
 
@@ -15017,7 +15040,7 @@ Define Class c_conversor_prg_a_dbc As c_conversor_prg_a_bin
 
 							If toFoxBin2Prg.l_ProcessFiles Then
 								toFoxBin2Prg.normalizeFileCapitalization( .T., lcInputFile_Class )
-								lcTempTxt		= Filetostr( lcInputFile_Class )
+								lcTempTxt		= This.readSourceText( lcInputFile_Class )
 
 *!*	Changed by: SF 19.11.2023
 *!*	<pdm>
@@ -15088,7 +15111,7 @@ Define Class c_conversor_prg_a_dbc As c_conversor_prg_a_bin
 							Exit	&& Si se indicó no procesar, se sale aquí. (Modo de simulación)
 						Endif
 
-						C_FB2PRG_CODE		= Filetostr( .c_InputFile )
+						C_FB2PRG_CODE		= This.readSourceText( .c_InputFile )
 
 						lnCodeLines			= Alines( laCodeLines, C_FB2PRG_CODE )
 
@@ -15451,7 +15474,7 @@ Define Class c_conversor_prg_a_mnx As c_conversor_prg_a_bin
 						Exit	&& Si se indicó no procesar, se sale aquí. (Modo de simulación)
 					Endif
 
-					C_FB2PRG_CODE		= Filetostr( .c_InputFile )
+					C_FB2PRG_CODE		= This.readSourceText( .c_InputFile )
 					lnCodeLines			= Alines( laCodeLines, C_FB2PRG_CODE )
 
 					.createMenu('CURSOR',toMenu )

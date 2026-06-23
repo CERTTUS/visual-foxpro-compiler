@@ -218,8 +218,6 @@ async function runFoxBin2Prg(
     const textPath = document.fileName;
     console.log(`Texto FoxBin2Prg salvo: ${textPath}`);
 
-    const convertUtf8 = config.get<boolean>('foxBin2PrgUtf8', true);
-
     // Garante o CONST.FXP na raiz: SC2/VC2 também fazem #INCLUDE CONST.PRG.
     const wsFolder = vscode.workspace.getWorkspaceFolder(document.uri);
     if (wsFolder) {
@@ -233,7 +231,7 @@ async function runFoxBin2Prg(
 
     let result;
     try {
-        result = await convertPrg2Bin(textPath, context.extensionPath, convertUtf8);
+        result = await convertPrg2Bin(textPath, context.extensionPath);
     } catch (err) {
         result = { success: false, outputs: [], message: (err as Error).message };
     }
@@ -283,7 +281,6 @@ async function buildWorkspace(
     const config = vscode.workspace.getConfiguration('visualFoxproCompiler');
     const convertEncoding = config.get<boolean>('convertEncodingBeforeCompile', true);
     const enableFoxBin2Prg = config.get<boolean>('enableFoxBin2Prg', true);
-    const convertUtf8 = config.get<boolean>('foxBin2PrgUtf8', true);
     const confirm = config.get<boolean>('confirmBuildRepository', true);
     const vcxOrder = config.get<string[]>('vcxBuildOrder', DEFAULT_VCX_ORDER);
 
@@ -396,7 +393,7 @@ async function buildWorkspace(
                     const startTime = Date.now();
                     let res;
                     try {
-                        res = await convertFilesOrdered(orderedFiles, context.extensionPath, convertUtf8, onProgress);
+                        res = await convertFilesOrdered(orderedFiles, context.extensionPath, onProgress);
                     } catch (err) {
                         res = { success: false, count: orderedFiles.length, message: (err as Error).message };
                     }

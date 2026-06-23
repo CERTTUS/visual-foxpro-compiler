@@ -2,8 +2,6 @@ import { execFile } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import * as iconv from 'iconv-lite';
-import { isUtf8 } from './encoding';
 
 /**
  * Mapeamento dos arquivos de texto FoxBin2Prg (principais) para os binários VFP
@@ -116,47 +114,18 @@ function runVbs(
 }
 
 /**
- * Converte um arquivo de texto UTF-8 para Windows-1252 in-place, devolvendo os
- * bytes originais para posterior restauração. Retorna `null` se nada foi alterado
- * (arquivo vazio ou não-UTF-8), caso em que não há o que restaurar.
- */
-function toWin1252InPlace(filePath: string): Buffer | null {
-    const buffer = fs.readFileSync(filePath);
-    if (buffer.length === 0 || !isUtf8(buffer)) {
-        return null;
-    }
-    let text = buffer.toString('utf8');
-    if (text.charCodeAt(0) === 0xFEFF) {
-        text = text.slice(1); // remove BOM UTF-8
-    }
-    fs.writeFileSync(filePath, iconv.encode(text, 'win1252'), { flag: 'w' });
-    return buffer;
-}
-
-/** Restaura os bytes originais de um arquivo (best-effort, não lança). */
-function restoreBytes(filePath: string, original: Buffer): void {
-    try {
-        fs.writeFileSync(filePath, original, { flag: 'w' });
-    } catch {
-        /* não mascara o resultado da conversão */
-    }
-}
-
-/**
  * Converte um único arquivo de texto FoxBin2Prg (SC2/VC2/FR2/...) para os binários
  * VFP correspondentes (PRG2BIN), usando o VFP9 instalado via COM e o motor
  * foxbin2prg embarcado em `bin/foxbin2prg`.
  *
- * Quando `convertUtf8` é verdadeiro e o arquivo está em UTF-8, ele é convertido
- * para Windows-1252 in-place apenas durante a execução e restaurado para os bytes
- * UTF-8 originais ao final (mesmo em caso de erro). Assim os binários são gerados
- * no diretório correto e com o nome correto (inclusive quando o FoxBin2Prg
- * redireciona class-per-file para o arquivo principal).
+ * A conversão de encoding UTF-8 → Windows-1252 é feita EM MEMÓRIA pelo próprio motor
+ * (método `readSourceText` em foxbin2prg.prg), que detecta UTF-8 por BOM/round-trip e
+ * converte com `STRCONV`. O arquivo de origem NUNCA é alterado em disco — nem o que está
+ * aberto no editor — e arquivos já em Windows-1252/ANSI passam intactos.
  */
 export async function convertPrg2Bin(
     textPath: string,
-    extensionPath: string,
-    convertUtf8: boolean
+    extensionPath: string
 ): Promise<FoxBin2PrgResult> {
     const ext = path.extname(textPath).toLowerCase();
     const pairs = TEXT_TO_BIN[ext];
@@ -172,32 +141,21 @@ export async function convertPrg2Bin(
     const origDir = path.dirname(textPath);
     const baseName = path.parse(textPath).name;
 
-    let originalBytes: Buffer | null = null;
-    if (convertUtf8) {
-        originalBytes = toWin1252InPlace(textPath);
+    const { code, stderr } = await runVbs(vbs, foxPath, textPath, origDir, 120000);
+    if (code !== 0) {
+        return {
+            success: false,
+            outputs: [],
+            message: `FoxBin2Prg retornou código ${code}${stderr ? `\n${stderr}` : ''}`,
+        };
     }
 
-    try {
-        const { code, stderr } = await runVbs(vbs, foxPath, textPath, origDir, 120000);
-        if (code !== 0) {
-            return {
-                success: false,
-                outputs: [],
-                message: `FoxBin2Prg retornou código ${code}${stderr ? `\n${stderr}` : ''}`,
-            };
-        }
+    // Best-effort: lista os binários esperados que existem (para o log).
+    const outputs = pairs
+        .map((e) => path.join(origDir, baseName + e))
+        .filter((p) => fs.existsSync(p));
 
-        // Best-effort: lista os binários esperados que existem (para o log).
-        const outputs = pairs
-            .map((e) => path.join(origDir, baseName + e))
-            .filter((p) => fs.existsSync(p));
-
-        return { success: true, outputs };
-    } finally {
-        if (originalBytes !== null) {
-            restoreBytes(textPath, originalBytes);
-        }
-    }
+    return { success: true, outputs };
 }
 
 export interface FoxBin2PrgFolderResult {
@@ -258,8 +216,8 @@ export function orderFoxBin2PrgFiles(files: string[], vcxPriority: string[]): st
  * processando os arquivos na ordem recebida. Bem mais rápido que arquivo-a-arquivo
  * e respeita dependências (ex.: VC2 antes de SC2).
  *
- * Quando `convertUtf8` é verdadeiro, todos são convertidos para Windows-1252 antes
- * do PRG2BIN e restaurados para UTF-8 ao final (mesmo em caso de erro).
+ * A conversão de encoding UTF-8 → Windows-1252 é feita EM MEMÓRIA pelo próprio motor
+ * (método `readSourceText` em foxbin2prg.prg); os arquivos de origem não são alterados.
  *
  * `onProgress(processed, currentName)` é chamado periodicamente com a quantidade de
  * arquivos já processados pelo VFP9 e o nome do arquivo atual (acompanha o progresso
@@ -268,7 +226,6 @@ export function orderFoxBin2PrgFiles(files: string[], vcxPriority: string[]): st
 export async function convertFilesOrdered(
     orderedFiles: string[],
     extensionPath: string,
-    convertUtf8: boolean,
     onProgress?: (processed: number, currentName: string) => void
 ): Promise<FoxBin2PrgFolderResult> {
     const { foxPath } = enginePaths(extensionPath);
@@ -278,21 +235,6 @@ export async function convertFilesOrdered(
     }
     if (orderedFiles.length === 0) {
         return { success: true, count: 0 };
-    }
-
-    // Converte todos os textos para Windows-1252, guardando os originais por arquivo.
-    const restoreMap = new Map<string, Buffer>();
-    if (convertUtf8) {
-        for (const file of orderedFiles) {
-            try {
-                const original = toWin1252InPlace(file);
-                if (original !== null) {
-                    restoreMap.set(file, original);
-                }
-            } catch {
-                /* ignora arquivo problemático; segue com os demais */
-            }
-        }
     }
 
     // Lista temporária em UTF-16LE (com BOM) — suporta acentos em caminhos.
@@ -339,9 +281,6 @@ export async function convertFilesOrdered(
             } catch {
                 /* ignora falha ao remover temporários */
             }
-        }
-        for (const [file, original] of restoreMap) {
-            restoreBytes(file, original);
         }
     }
 }

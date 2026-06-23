@@ -1,6 +1,15 @@
 # Change Log
 
 
+## [1.1.5]
+
+- Feat: a conversão de encoding UTF-8 → Windows-1252 do PRG2BIN passou a ser feita **em memória pelo próprio motor FoxBin2Prg**, não mais pela extensão. Foi adicionado o método `readSourceText` em `bin/foxbin2prg/foxbin2prg.prg` (classe `c_conversor_base`), que ao ler cada fonte (SC2/VC2/FR2/...) detecta UTF-8 pelo BOM ou por round-trip estável (`STRCONV` 11/9) e converte para o codepage atual; arquivos já em Windows-1252/ANSI passam intactos. A extensão deixou de gerar arquivo temporário ou alterar o arquivo em disco — o `.sc2` aberto no editor nunca é tocado. Comportamento validado contra o VFP9 real (`.fxp` recompilado).
+- A configuração `visualFoxproCompiler.foxBin2PrgUtf8` foi marcada como obsoleta (a conversão agora é automática e não a utiliza mais).
+
+## [1.1.4]
+
+- Fix: ao salvar um texto FoxBin2Prg (.sc2/.vc2/.fr2/...), a conversão UTF-8 → Windows-1252 deixa de ser feita in-place no arquivo aberto. Agora ela ocorre em um arquivo temporário no mesmo diretório (preservando `#INCLUDE` relativo); os binários gerados são renomeados para o nome real e o temporário é removido. Elimina o "flicker" de encoding no editor e o risco de perder edições feitas durante a janela de compilação. Quando não há conversão de encoding, o PRG2BIN roda direto sobre o original.
+
 ## [1.1.3]
 
 - Feat: a validação do CONST passa a valer também ao salvar arquivos FoxBin2Prg (.sc2/.vc2/.fr2/...), pois eles também fazem `#INCLUDE CONST.PRG`. Antes de gerar o binário, garante o `CONST.FXP` na raiz (compilando o `CONST.PR2` se faltar). No build, o CONST já era garantido no passo 0.
