@@ -66,7 +66,12 @@ export function activate(context: vscode.ExtensionContext) {
         () => buildWorkspace(context, outputChannel)
     );
 
-    context.subscriptions.push(disposable, buildCmd, outputChannel);
+    const buildChangedCmd = vscode.commands.registerCommand(
+        'visualFoxproCompiler.buildChangedFiles',
+        () => buildChangedFiles(context, outputChannel)
+    );
+
+    context.subscriptions.push(disposable, buildCmd, buildChangedCmd, outputChannel);
 }
 
 interface Pr2Result {
@@ -279,10 +284,8 @@ async function buildWorkspace(
     }
 
     const config = vscode.workspace.getConfiguration('visualFoxproCompiler');
-    const convertEncoding = config.get<boolean>('convertEncodingBeforeCompile', true);
     const enableFoxBin2Prg = config.get<boolean>('enableFoxBin2Prg', true);
     const confirm = config.get<boolean>('confirmBuildRepository', true);
-    const vcxOrder = config.get<string[]>('vcxBuildOrder', DEFAULT_VCX_ORDER);
 
     const exclude = '**/{node_modules,.git,foxbin2prg}/**';
     const pr2Uris = await vscode.workspace.findFiles('**/*.{pr2,PR2}', exclude);
@@ -290,8 +293,7 @@ async function buildWorkspace(
         ? await vscode.workspace.findFiles(`**/*.{${foxBin2PrgGlobExts()}}`, exclude)
         : [];
 
-    const total = pr2Uris.length + textUris.length;
-    if (total === 0) {
+    if (pr2Uris.length + textUris.length === 0) {
         vscode.window.showInformationMessage('Nenhum fonte FoxPro (.pr2/.sc2/.vc2/...) encontrado no repositório.');
         return;
     }
@@ -307,9 +309,45 @@ async function buildWorkspace(
         }
     }
 
+    await compileFileSet(
+        pr2Uris.map((u) => u.fsPath),
+        textUris.map((u) => u.fsPath),
+        folders,
+        context,
+        outputChannel,
+        config,
+        'Compilando repositório (Visual FoxPro)',
+        '=== Compilar todo o repositório ==='
+    );
+}
+
+/**
+ * Núcleo de compilação reutilizável. Dado um conjunto de caminhos (.pr2 e textos
+ * FoxBin2Prg), garante o `CONST.FXP`, compila os `.pr2` (arquivo a arquivo) e gera os
+ * binários FoxBin2Prg numa única sessão do VFP9 por workspace folder (respeitando a
+ * ordem VC2 antes de SC2). Usado por "Compilar todo o repositório" e por "Compilar
+ * arquivos alterados (git)".
+ */
+async function compileFileSet(
+    pr2Paths: string[],
+    textPaths: string[],
+    folders: readonly vscode.WorkspaceFolder[],
+    context: vscode.ExtensionContext,
+    outputChannel: vscode.OutputChannel,
+    config: vscode.WorkspaceConfiguration,
+    progressTitle: string,
+    headerLine: string
+): Promise<void> {
+    const convertEncoding = config.get<boolean>('convertEncodingBeforeCompile', true);
+    const enableFoxBin2Prg = config.get<boolean>('enableFoxBin2Prg', true);
+    const vcxOrder = config.get<string[]>('vcxBuildOrder', DEFAULT_VCX_ORDER);
+
+    const texts = enableFoxBin2Prg ? textPaths : [];
+    const total = pr2Paths.length + texts.length;
+
     const compilerPath = path.join(context.extensionPath, 'bin', 'visual-foxpro-compiler.exe');
 
-    outputChannel.appendLine('=== Compilar todo o repositório ===');
+    outputChannel.appendLine(headerLine);
     outputChannel.show(true);
 
     let pr2Ok = 0;
@@ -321,7 +359,7 @@ async function buildWorkspace(
     await vscode.window.withProgress(
         {
             location: vscode.ProgressLocation.Notification,
-            title: 'Compilando repositório (Visual FoxPro)',
+            title: progressTitle,
             cancellable: true,
         },
         async (progress, token) => {
@@ -338,11 +376,10 @@ async function buildWorkspace(
             }
 
             // 1) PR2 -> PRG + FXP (arquivo a arquivo)
-            for (const uri of pr2Uris) {
+            for (const pr2Path of pr2Paths) {
                 if (token.isCancellationRequested) {
                     return;
                 }
-                const pr2Path = uri.fsPath;
                 done++;
                 progress.report({ increment: step, message: `${done} / ${total} — ${path.basename(pr2Path)}` });
                 const result = await compilePr2File(pr2Path, compilerPath, convertEncoding);
@@ -358,15 +395,13 @@ async function buildWorkspace(
 
             // 2) FoxBin2Prg -> binários VFP, respeitando a ordem (VC2 antes de SC2),
             //    em uma única sessão do VFP9 por workspace folder.
-            if (enableFoxBin2Prg && textUris.length > 0) {
+            if (texts.length > 0) {
                 for (const folder of folders) {
                     if (token.isCancellationRequested) {
                         return;
                     }
                     const folderPath = folder.uri.fsPath;
-                    const filesInFolder = textUris
-                        .map((u) => u.fsPath)
-                        .filter((p) => isUnder(p, folderPath));
+                    const filesInFolder = texts.filter((p) => isUnder(p, folderPath));
                     if (filesInFolder.length === 0) {
                         continue;
                     }
@@ -429,7 +464,7 @@ async function buildWorkspace(
         }
     );
 
-    const summary = `Repositório compilado: PR2 ${pr2Ok} ok / ${pr2Fail} erro(s); FoxBin2Prg ${foxOk} ok / ${foxWarn} aviso(s) / ${foxFail} erro(s).`;
+    const summary = `Compilação concluída: PR2 ${pr2Ok} ok / ${pr2Fail} erro(s); FoxBin2Prg ${foxOk} ok / ${foxWarn} aviso(s) / ${foxFail} erro(s).`;
     outputChannel.appendLine(summary);
     outputChannel.appendLine('---');
     if (pr2Fail > 0 || foxFail > 0 || foxWarn > 0) {
@@ -437,6 +472,103 @@ async function buildWorkspace(
     } else {
         vscode.window.showInformationMessage(summary);
     }
+}
+
+/** Executa o `git` no diretório informado e resolve com stdout e código de saída. */
+function runGit(cwd: string, args: string[]): Promise<{ stdout: string; code: number; stderr: string }> {
+    return new Promise((resolve) => {
+        execFile(
+            'git',
+            args,
+            { cwd, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+            (error, stdout, stderr) => {
+                const code = error && typeof (error as unknown as { code?: number }).code === 'number'
+                    ? (error as unknown as { code: number }).code
+                    : (error ? 1 : 0);
+                resolve({ stdout: stdout ? String(stdout) : '', code, stderr: stderr ? String(stderr) : '' });
+            }
+        );
+    });
+}
+
+/**
+ * Coleta os arquivos modificados/criados (working tree + staged) via git, nos
+ * repositórios que contêm os workspace folders. Considera M/A/?? — renomeados entram
+ * pelo caminho novo (que existe no disco); deletados são ignorados (não existem).
+ * Usa `-z` (caminhos crus, sem escapar acentos) e `--no-renames` (1 registro por
+ * arquivo, parsing uniforme). Devolve caminhos absolutos.
+ */
+async function getGitChangedFiles(folders: readonly vscode.WorkspaceFolder[]): Promise<string[]> {
+    const roots = new Set<string>();
+    for (const folder of folders) {
+        const r = await runGit(folder.uri.fsPath, ['rev-parse', '--show-toplevel']);
+        if (r.code === 0 && r.stdout.trim()) {
+            roots.add(r.stdout.trim());
+        }
+    }
+
+    const result = new Set<string>();
+    for (const root of roots) {
+        const r = await runGit(root, ['-c', 'core.quotepath=false', 'status', '--porcelain=v1', '-z', '--no-renames']);
+        if (r.code !== 0) {
+            continue;
+        }
+        for (const entry of r.stdout.split('\0')) {
+            if (entry.length < 4) {
+                continue; // formato de cada registro: "XY <path>"
+            }
+            const abs = path.resolve(root, entry.slice(3));
+            if (fs.existsSync(abs)) {
+                result.add(abs);
+            }
+        }
+    }
+    return [...result];
+}
+
+/**
+ * Comando "Compilar arquivos alterados (git)": compila apenas os fontes FoxPro que o
+ * git reporta como modificados/criados (working tree + staged). Ideal após edições em
+ * lote (ex.: feitas por uma IA) — compila só o que mudou, na ordem de dependência.
+ */
+async function buildChangedFiles(
+    context: vscode.ExtensionContext,
+    outputChannel: vscode.OutputChannel
+): Promise<void> {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+        vscode.window.showErrorMessage('Abra uma pasta/repositório para compilar.');
+        return;
+    }
+
+    const config = vscode.workspace.getConfiguration('visualFoxproCompiler');
+
+    let changed: string[];
+    try {
+        changed = await getGitChangedFiles(folders);
+    } catch (err) {
+        vscode.window.showErrorMessage(`Falha ao consultar o git: ${(err as Error).message}`);
+        return;
+    }
+
+    const pr2Paths = changed.filter((p) => p.toLowerCase().endsWith('.pr2'));
+    const textPaths = changed.filter((p) => isFoxBin2PrgText(p));
+
+    if (pr2Paths.length + textPaths.length === 0) {
+        vscode.window.showInformationMessage('Nenhum fonte FoxPro alterado (.pr2/.sc2/.vc2/...) segundo o git.');
+        return;
+    }
+
+    await compileFileSet(
+        pr2Paths,
+        textPaths,
+        folders,
+        context,
+        outputChannel,
+        config,
+        'Compilando alterados (Visual FoxPro)',
+        '=== Compilar arquivos alterados (git) ==='
+    );
 }
 
 /** Rótulo da extensão em maiúsculas para o log (ex.: `SC2`, `VC2`). */

@@ -1,6 +1,11 @@
 # Change Log
 
 
+## [1.1.6]
+
+- Feat: novo comando **`Visual FoxPro: Compilar arquivos alterados (git)`** (`visualFoxproCompiler.buildChangedFiles`). Compila apenas os fontes que o git reporta como modificados/criados (working tree + staged: M/A/??), na ordem de dependência (CONST → PR2 → VC2 antes de SC2, em uma única sessão do VFP9). Resolve o caso de arquivos alterados fora do editor (ex.: por uma IA/script), que não disparam o `onDidSaveTextDocument`. Atalho padrão **`Ctrl+Shift+Alt+S`** (livre por padrão, não sobrescreve atalho nativo e sem o problema do AltGr em teclado ABNT2; pode ser alterado em `keybindings.json`); também disponível na paleta de comandos. Usa `git status --porcelain -z --no-renames` (suporta caminhos com acento).
+- Refactor: extraído o núcleo `compileFileSet` compartilhado entre "Compilar todo o repositório" e o novo comando.
+
 ## [1.1.5]
 
 - Feat: a conversão de encoding UTF-8 → Windows-1252 do PRG2BIN passou a ser feita **em memória pelo próprio motor FoxBin2Prg**, não mais pela extensão. Foi adicionado o método `readSourceText` em `bin/foxbin2prg/foxbin2prg.prg` (classe `c_conversor_base`), que ao ler cada fonte (SC2/VC2/FR2/...) detecta UTF-8 pelo BOM ou por round-trip estável (`STRCONV` 11/9) e converte para o codepage atual; arquivos já em Windows-1252/ANSI passam intactos. A extensão deixou de gerar arquivo temporário ou alterar o arquivo em disco — o `.sc2` aberto no editor nunca é tocado. Comportamento validado contra o VFP9 real (`.fxp` recompilado).
