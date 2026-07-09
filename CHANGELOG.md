@@ -1,6 +1,13 @@
 # Change Log
 
 
+## [1.2.0]
+
+- Feat: novo fluxo **`.sq2` → `.SQL`**. Ao salvar um arquivo `.sq2` (modelagem do banco PostgreSQL editável em UTF-8), gera o `.SQL` de mesmo nome/diretório convertendo UTF-8 → Windows-1252 (o encoding lido pelo VFP9 em runtime). **Não há compilação** — é apenas conversão de encoding, análoga ao par `.pr2`/`.prg`, resolvendo o problema de editores (ex.: Cursor) que não interpretam corretamente o Windows-1252. A extensão de destino é sempre maiúscula (`.SQL`) para casar com os arquivos versionados. Usa a configuração existente `convertEncodingBeforeCompile`.
+- Feat: os comandos **Compilar todo o repositório** e **Compilar arquivos alterados (git)** passam a gerar também os `.SQL` de todos os `.sq2` (com feedback por arquivo e no resumo).
+- Ativação: adicionado `workspaceContains:**/*.sq2` para garantir a ativação da extensão em repositórios com `.sq2` mesmo sem arquivos FoxPro abertos.
+- Refactor: extraído o núcleo comum `writeConverted` em `src/encoding.ts`, compartilhado por `writePrgFromPr2` e pelo novo `writeSqlFromSq2`.
+
 ## [1.1.6]
 
 - Feat: novo comando **`Visual FoxPro: Compilar arquivos alterados (git)`** (`visualFoxproCompiler.buildChangedFiles`). Compila apenas os fontes que o git reporta como modificados/criados (working tree + staged: M/A/??), na ordem de dependência (CONST → PR2 → VC2 antes de SC2, em uma única sessão do VFP9). Resolve o caso de arquivos alterados fora do editor (ex.: por uma IA/script), que não disparam o `onDidSaveTextDocument`. Atalho padrão **`Ctrl+Shift+Alt+S`** (livre por padrão, não sobrescreve atalho nativo e sem o problema do AltGr em teclado ABNT2; pode ser alterado em `keybindings.json`); também disponível na paleta de comandos. Usa `git status --porcelain -z --no-renames` (suporta caminhos com acento).

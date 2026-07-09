@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
-import { writePrgFromPr2 } from './encoding';
+import { writePrgFromPr2, writeSqlFromSq2 } from './encoding';
 import {
     convertPrg2Bin,
     convertFilesOrdered,
@@ -52,6 +52,11 @@ export function activate(context: vscode.ExtensionContext) {
 
         if (document.fileName.toLowerCase().endsWith('.pr2')) {
             await compilePr2(document, context, outputChannel, config);
+            return;
+        }
+
+        if (document.fileName.toLowerCase().endsWith('.sq2')) {
+            await convertSq2(document, outputChannel, config);
             return;
         }
 
@@ -210,6 +215,55 @@ async function compilePr2(
     vscode.window.setStatusBarMessage('Compilação concluída', 10000);
 }
 
+interface Sq2Result {
+    success: boolean;
+    sqlPath?: string;
+    message?: string;
+}
+
+/**
+ * Gera o `.SQL` (Windows-1252) a partir de um `.sq2` (modelagem PostgreSQL em UTF-8).
+ * É apenas conversão de encoding — não há compilação; o `.SQL` é o produto final lido
+ * pelo VFP9. Retorna o resultado sem interagir com a UI (reutilizável em lote).
+ */
+function convertSq2File(sq2Path: string, convertEncoding: boolean): Sq2Result {
+    const writeResult = writeSqlFromSq2(sq2Path, convertEncoding);
+    if (!writeResult.success) {
+        return { success: false, message: `Falha ao gerar .SQL: ${writeResult.message}` };
+    }
+    return { success: true, sqlPath: writeResult.sqlPath };
+}
+
+/**
+ * Fluxo SQ2 ao salvar: gera o `.SQL` de mesmo nome/diretório (UTF-8 → Windows-1252),
+ * reportando na UI. Sem compilação.
+ */
+async function convertSq2(
+    document: vscode.TextDocument,
+    outputChannel: vscode.OutputChannel,
+    config: vscode.WorkspaceConfiguration
+): Promise<void> {
+    const sq2Path = document.fileName;
+    console.log(`SQ2 salvo: ${sq2Path}`);
+    const convertEncoding = config.get<boolean>('convertEncodingBeforeCompile', true);
+
+    const result = convertSq2File(sq2Path, convertEncoding);
+    outputChannel.appendLine(`Converter (SQ2) ${sq2Path}:`);
+
+    if (!result.success) {
+        console.error(result.message);
+        outputChannel.appendLine(result.message ?? 'Erro desconhecido.');
+        outputChannel.appendLine('---');
+        outputChannel.show(true);
+        vscode.window.showErrorMessage('Erro ao gerar o .SQL a partir do .sq2.');
+        return;
+    }
+
+    outputChannel.appendLine(`SQL gerado: ${result.sqlPath}`);
+    outputChannel.appendLine('---');
+    vscode.window.setStatusBarMessage('SQL gerado (SQ2 → SQL)', 10000);
+}
+
 /**
  * Fluxo FoxBin2Prg ao salvar: gera os binários VFP correspondentes (PRG2BIN)
  * via VFP9 instalado (COM) e o motor foxbin2prg embarcado em `bin/foxbin2prg`.
@@ -289,18 +343,19 @@ async function buildWorkspace(
 
     const exclude = '**/{node_modules,.git,foxbin2prg}/**';
     const pr2Uris = await vscode.workspace.findFiles('**/*.{pr2,PR2}', exclude);
+    const sq2Uris = await vscode.workspace.findFiles('**/*.{sq2,SQ2}', exclude);
     const textUris = enableFoxBin2Prg
         ? await vscode.workspace.findFiles(`**/*.{${foxBin2PrgGlobExts()}}`, exclude)
         : [];
 
-    if (pr2Uris.length + textUris.length === 0) {
-        vscode.window.showInformationMessage('Nenhum fonte FoxPro (.pr2/.sc2/.vc2/...) encontrado no repositório.');
+    if (pr2Uris.length + sq2Uris.length + textUris.length === 0) {
+        vscode.window.showInformationMessage('Nenhum fonte FoxPro (.pr2/.sq2/.sc2/.vc2/...) encontrado no repositório.');
         return;
     }
 
     if (confirm) {
         const pick = await vscode.window.showWarningMessage(
-            `Compilar todo o repositório? Serão processados ${pr2Uris.length} arquivo(s) .pr2 e ${textUris.length} texto(s) FoxBin2Prg. Binários existentes serão sobrescritos.`,
+            `Compilar todo o repositório? Serão processados ${pr2Uris.length} arquivo(s) .pr2, ${sq2Uris.length} arquivo(s) .sq2 e ${textUris.length} texto(s) FoxBin2Prg. Binários existentes serão sobrescritos.`,
             { modal: true },
             'Compilar'
         );
@@ -312,6 +367,7 @@ async function buildWorkspace(
     await compileFileSet(
         pr2Uris.map((u) => u.fsPath),
         textUris.map((u) => u.fsPath),
+        sq2Uris.map((u) => u.fsPath),
         folders,
         context,
         outputChannel,
@@ -331,6 +387,7 @@ async function buildWorkspace(
 async function compileFileSet(
     pr2Paths: string[],
     textPaths: string[],
+    sq2Paths: string[],
     folders: readonly vscode.WorkspaceFolder[],
     context: vscode.ExtensionContext,
     outputChannel: vscode.OutputChannel,
@@ -343,7 +400,7 @@ async function compileFileSet(
     const vcxOrder = config.get<string[]>('vcxBuildOrder', DEFAULT_VCX_ORDER);
 
     const texts = enableFoxBin2Prg ? textPaths : [];
-    const total = pr2Paths.length + texts.length;
+    const total = pr2Paths.length + texts.length + sq2Paths.length;
 
     const compilerPath = path.join(context.extensionPath, 'bin', 'visual-foxpro-compiler.exe');
 
@@ -352,6 +409,8 @@ async function compileFileSet(
 
     let pr2Ok = 0;
     let pr2Fail = 0;
+    let sqlOk = 0;
+    let sqlFail = 0;
     let foxOk = 0;
     let foxWarn = 0;
     let foxFail = 0;
@@ -390,6 +449,23 @@ async function compileFileSet(
                     pr2Fail++;
                     const detail = result.errors !== undefined ? result.errors.trim() : result.message;
                     outputChannel.appendLine(`[ERRO] PR2  ${pr2Path}: ${detail ?? ''}`);
+                }
+            }
+
+            // 1b) SQ2 -> SQL (Windows-1252), apenas conversão de encoding (sem compilação).
+            for (const sq2Path of sq2Paths) {
+                if (token.isCancellationRequested) {
+                    return;
+                }
+                done++;
+                progress.report({ increment: step, message: `${done} / ${total} — ${path.basename(sq2Path)}` });
+                const result = convertSq2File(sq2Path, convertEncoding);
+                if (result.success) {
+                    sqlOk++;
+                    outputChannel.appendLine(`[OK]  SQ2  ${sq2Path}`);
+                } else {
+                    sqlFail++;
+                    outputChannel.appendLine(`[ERRO] SQ2  ${sq2Path}: ${result.message ?? ''}`);
                 }
             }
 
@@ -464,10 +540,10 @@ async function compileFileSet(
         }
     );
 
-    const summary = `Compilação concluída: PR2 ${pr2Ok} ok / ${pr2Fail} erro(s); FoxBin2Prg ${foxOk} ok / ${foxWarn} aviso(s) / ${foxFail} erro(s).`;
+    const summary = `Compilação concluída: PR2 ${pr2Ok} ok / ${pr2Fail} erro(s); SQ2 ${sqlOk} ok / ${sqlFail} erro(s); FoxBin2Prg ${foxOk} ok / ${foxWarn} aviso(s) / ${foxFail} erro(s).`;
     outputChannel.appendLine(summary);
     outputChannel.appendLine('---');
-    if (pr2Fail > 0 || foxFail > 0 || foxWarn > 0) {
+    if (pr2Fail > 0 || sqlFail > 0 || foxFail > 0 || foxWarn > 0) {
         vscode.window.showWarningMessage(summary);
     } else {
         vscode.window.showInformationMessage(summary);
@@ -552,16 +628,18 @@ async function buildChangedFiles(
     }
 
     const pr2Paths = changed.filter((p) => p.toLowerCase().endsWith('.pr2'));
+    const sq2Paths = changed.filter((p) => p.toLowerCase().endsWith('.sq2'));
     const textPaths = changed.filter((p) => isFoxBin2PrgText(p));
 
-    if (pr2Paths.length + textPaths.length === 0) {
-        vscode.window.showInformationMessage('Nenhum fonte FoxPro alterado (.pr2/.sc2/.vc2/...) segundo o git.');
+    if (pr2Paths.length + sq2Paths.length + textPaths.length === 0) {
+        vscode.window.showInformationMessage('Nenhum fonte FoxPro alterado (.pr2/.sq2/.sc2/.vc2/...) segundo o git.');
         return;
     }
 
     await compileFileSet(
         pr2Paths,
         textPaths,
+        sq2Paths,
         folders,
         context,
         outputChannel,

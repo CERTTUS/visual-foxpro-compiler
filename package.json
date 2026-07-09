@@ -1,8 +1,8 @@
 {
   "name": "visual-foxpro-compiler",
   "displayName": "Visual Foxpro PR2 compiler",
-  "description": "Ao salvar um .pr2: gera o .prg (UTF-8 para Windows-1252, se ativado) e compila para .FXP. Ao salvar .sc2/.vc2/.fr2/.lb2/.mn2/.pj2/.dc2: gera os binários VFP (PRG2BIN) via FoxBin2Prg embarcado.",
-  "version": "1.1.6",
+  "description": "Ao salvar um .pr2: gera o .prg (UTF-8 para Windows-1252, se ativado) e compila para .FXP. Ao salvar um .sq2: gera o .SQL (modelagem PostgreSQL) convertendo UTF-8 para Windows-1252. Ao salvar .sc2/.vc2/.fr2/.lb2/.mn2/.pj2/.dc2: gera os binários VFP (PRG2BIN) via FoxBin2Prg embarcado.",
+  "version": "1.2.0",
   "publisher": "vfcompiler",
   "author": "Marco Plaza",
   "icon": "images/nfoxLogo.png",
@@ -16,7 +16,9 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:foxpro"
+    "onLanguage:foxpro",
+    "workspaceContains:**/*.sq2",
+    "workspaceContains:**/*.SQ2"
   ],
   "contributes": {
     "configuration": {
@@ -25,7 +27,7 @@
         "visualFoxproCompiler.convertEncodingBeforeCompile": {
           "type": "boolean",
           "default": true,
-          "description": "Ao salvar .pr2: converter UTF-8 para Windows-1252 no .prg gerado. Se desativado, copia os bytes sem alterar."
+          "description": "Ao salvar .pr2 (gera .prg) ou .sq2 (gera .SQL): converter UTF-8 para Windows-1252 no arquivo gerado. Se desativado, copia os bytes sem alterar."
         },
         "visualFoxproCompiler.enableFoxBin2Prg": {
           "type": "boolean",
