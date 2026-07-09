@@ -1,6 +1,14 @@
 # Change Log
 
 
+## [1.3.0]
+
+- Feat: novo fluxo **`.rpt` → `.RPA`** (relatórios do **Crystal Reports**). Nos comandos **Compilar todo o repositório** e **Compilar arquivos alterados (git)**, gera o arquivo texto `.RPA` de cada `.rpt`, permitindo versionar/comparar (diff) os relatórios binários. Usa o `GeradorDiferencasRelatorio` embarcado em `bin/rpt2rpa`, acionado pelo VFP9 via COM (espelha o padrão do FoxBin2Prg). **Não há gatilho ao salvar** — o `.rpt` é binário; a geração ocorre apenas nos comandos de build. **Desativado por padrão** (nova configuração `visualFoxproCompiler.enableRpt2Rpa`).
+- A solução embarcada é uma **cópia adaptada** do `GeradorDiferencasRelatorio.PRG` (o original não é alterado): os `MESSAGEBOX` bloqueantes foram trocados por gravação da mensagem em arquivo de status + exit code, evitando travar o VFP9 headless; falhas são reportadas no Output. O `.PRG` é mantido em Windows-1252 e compilado para `.FXP` pelo compilador embarcado.
+- Requisitos do fluxo (documentados): Crystal Reports XI (11) registrado (`CrystalRuntime.Application.11`), `CFG\CONEXAO.MEM` acessível a partir do `.rpt` e conexão PostgreSQL ativa (a seção de SQL do relatório é resolvida contra o banco).
+- Refactor: ponte com o VFP9 via `cscript` extraída para `src/vfpBridge.ts` (`resolveCscript`/`execCscript`), compartilhada por `foxbin2prg.ts` e pelo novo `rpt2rpa.ts`.
+- Ativação: adicionado `workspaceContains:**/*.rpt`.
+
 ## [1.2.0]
 
 - Feat: novo fluxo **`.sq2` → `.SQL`**. Ao salvar um arquivo `.sq2` (modelagem do banco PostgreSQL editável em UTF-8), gera o `.SQL` de mesmo nome/diretório convertendo UTF-8 → Windows-1252 (o encoding lido pelo VFP9 em runtime). **Não há compilação** — é apenas conversão de encoding, análoga ao par `.pr2`/`.prg`, resolvendo o problema de editores (ex.: Cursor) que não interpretam corretamente o Windows-1252. A extensão de destino é sempre maiúscula (`.SQL`) para casar com os arquivos versionados. Usa a configuração existente `convertEncodingBeforeCompile`.

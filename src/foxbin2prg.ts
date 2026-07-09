@@ -1,7 +1,7 @@
-import { execFile } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { execCscript } from './vfpBridge';
 
 /**
  * Mapeamento dos arquivos de texto FoxBin2Prg (principais) para os binários VFP
@@ -64,39 +64,6 @@ export interface FoxBin2PrgResult {
 function enginePaths(extensionPath: string): { foxPath: string; vbs: string } {
     const foxPath = path.join(extensionPath, 'bin', 'foxbin2prg');
     return { foxPath, vbs: path.join(foxPath, 'Run-Bin2Prg-VFP9.vbs') };
-}
-
-/** Localiza o cscript.exe de 32 bits (SysWOW64), com fallback para System32. */
-function resolveCscript(): string {
-    const winDir = process.env.windir || process.env.SystemRoot || 'C:\\Windows';
-    const wow = path.join(winDir, 'SysWOW64', 'cscript.exe');
-    if (fs.existsSync(wow)) {
-        return wow;
-    }
-    return path.join(winDir, 'System32', 'cscript.exe');
-}
-
-/** Executa o cscript com os argumentos dados e resolve com o código de saída. */
-function execCscript(
-    foxPath: string,
-    args: string[],
-    timeoutMs: number
-): Promise<{ code: number; stderr: string }> {
-    const cscript = resolveCscript();
-    return new Promise((resolve) => {
-        execFile(
-            cscript,
-            ['//nologo', ...args],
-            { cwd: foxPath, windowsHide: true, timeout: timeoutMs },
-            (error, _stdout, stderr) => {
-                // execFile só popula error.code para exit != 0; sucesso => code 0.
-                const code = error && typeof (error as unknown as { code?: number }).code === 'number'
-                    ? (error as unknown as { code: number }).code
-                    : (error ? 1 : 0);
-                resolve({ code, stderr: stderr ? String(stderr) : '' });
-            }
-        );
-    });
 }
 
 /**
