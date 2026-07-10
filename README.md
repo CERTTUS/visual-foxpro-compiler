@@ -18,7 +18,7 @@ A extensão atua ao salvar arquivos, conforme a extensão:
 
 Além disso, nos comandos de compilação (repositório/alterados):
 
-- **`.rpt`** (relatórios do **Crystal Reports**) → gera o **`.RPA`** (arquivo texto) de mesmo nome/diretório, usando o `GeradorDiferencasRelatorio` embarcado, acionado pelo Visual FoxPro 9 (COM). O `.RPA` permite versionar e comparar (diff) os relatórios binários no controle de versão. **Não há gatilho ao salvar** — o `.rpt` é binário; a geração ocorre apenas nos comandos de build. **Desativado por padrão** (ver `enableRpt2Rpa`), por exigir Crystal Reports e banco (ver [Requisitos](#requisitos)).
+- **`.rpt`** (relatórios do **Crystal Reports**) → gera o **`.RPA`** (arquivo texto) de mesmo nome/diretório, usando o `GeradorDiferencasRelatorio` embarcado, acionado pelo Visual FoxPro 9 (COM). O `.RPA` permite versionar e comparar (diff) os relatórios binários no controle de versão. **Não há gatilho ao salvar** — o `.rpt` é binário; a geração ocorre apenas nos comandos de build. No **Compilar arquivos alterados (git)**, um `.rpt` alterado **sempre** gera o `.RPA`; no **Compilar todo o repositório**, depende da configuração `enableRpt2Rpa` (desativada por padrão). Exige Crystal Reports e banco (ver [Requisitos](#requisitos)).
 
 ![Captura do compilador](image1.png)
 
@@ -39,7 +39,7 @@ A ação varre o(s) workspace folder(s), gera `PRG`+`FXP` de todos os `.pr2`, os
 
 - **visualFoxproCompiler.convertEncodingBeforeCompile** — Se ativado, o conteúdo UTF-8 do `.pr2` é gravado no `.prg` (e o do `.sq2` no `.SQL`) em Windows-1252. Se desativado, os bytes são copiados sem conversão.
 - **visualFoxproCompiler.enableFoxBin2Prg** — Ativa a geração de binários VFP (PRG2BIN) ao salvar arquivos de texto FoxBin2Prg. Padrão: ativado.
-- **visualFoxproCompiler.enableRpt2Rpa** — Nos comandos de build (repositório/alterados), gera o `.RPA` (texto) de cada relatório Crystal Reports (`.rpt`) via VFP9 + Crystal 11. Padrão: **desativado** (requer Crystal Reports e banco — ver Requisitos).
+- **visualFoxproCompiler.enableRpt2Rpa** — No comando **Compilar todo o repositório**, gera o `.RPA` (texto) de cada relatório Crystal Reports (`.rpt`) via VFP9 + Crystal 11. Padrão: **desativado** (requer Crystal Reports e banco — ver Requisitos). **Não afeta** o comando **Compilar arquivos alterados (git)**, no qual um `.rpt` alterado sempre gera o `.RPA`.
 - **visualFoxproCompiler.foxBin2PrgUtf8** — Trata os arquivos de texto FoxBin2Prg como UTF-8: converte para Windows-1252 apenas durante o PRG2BIN e mantém o arquivo em UTF-8 no disco. Padrão: ativado.
 - **visualFoxproCompiler.confirmBuildRepository** — Pede confirmação antes de compilar todo o repositório. Padrão: ativado. (A descrição desta configuração contém o link para acionar a compilação.)
 - **visualFoxproCompiler.vcxBuildOrder** — Ordem de compilação das bibliotecas de classes (VC2), por nome. Padrão: `vclFormularios`, `vclComponentesBasicos`, `vclComponentesIntegrados`.

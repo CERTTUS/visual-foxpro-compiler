@@ -404,11 +404,12 @@ async function compileFileSet(
 ): Promise<void> {
     const convertEncoding = config.get<boolean>('convertEncodingBeforeCompile', true);
     const enableFoxBin2Prg = config.get<boolean>('enableFoxBin2Prg', true);
-    const enableRpt2Rpa = config.get<boolean>('enableRpt2Rpa', false);
     const vcxOrder = config.get<string[]>('vcxBuildOrder', DEFAULT_VCX_ORDER);
 
     const texts = enableFoxBin2Prg ? textPaths : [];
-    const rpts = enableRpt2Rpa ? rptPaths : [];
+    // Os `.rpt` já vêm filtrados pelo chamador: "Compilar todo o repositório" respeita
+    // `enableRpt2Rpa`; "Compilar alterados (git)" sempre inclui os `.rpt` alterados.
+    const rpts = rptPaths;
     const total = pr2Paths.length + texts.length + sq2Paths.length + rpts.length;
 
     const compilerPath = path.join(context.extensionPath, 'bin', 'visual-foxpro-compiler.exe');
@@ -660,11 +661,11 @@ async function buildChangedFiles(
         return;
     }
 
-    const enableRpt2Rpa = config.get<boolean>('enableRpt2Rpa', false);
-
+    // Diferente do "Compilar todo o repositório", aqui os `.rpt` alterados SEMPRE geram
+    // o `.RPA` (independe de `enableRpt2Rpa`): o objetivo é versionar o diff do que mudou.
     const pr2Paths = changed.filter((p) => p.toLowerCase().endsWith('.pr2'));
     const sq2Paths = changed.filter((p) => p.toLowerCase().endsWith('.sq2'));
-    const rptPaths = enableRpt2Rpa ? changed.filter((p) => isRptFile(p)) : [];
+    const rptPaths = changed.filter((p) => isRptFile(p));
     const textPaths = changed.filter((p) => isFoxBin2PrgText(p));
 
     if (pr2Paths.length + sq2Paths.length + rptPaths.length + textPaths.length === 0) {

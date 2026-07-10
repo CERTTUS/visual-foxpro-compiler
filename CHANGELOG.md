@@ -1,6 +1,10 @@
 # Change Log
 
 
+## [1.3.1]
+
+- Change: no comando **Compilar arquivos alterados (git)**, um relatório `.rpt` novo/alterado **sempre** gera o `.RPA`, independentemente da configuração `enableRpt2Rpa`. O objetivo é versionar o diff do que mudou sem exigir uma opção ligada. A configuração `enableRpt2Rpa` passa a controlar **apenas** o comando **Compilar todo o repositório** (build completo, mais custoso). O fluxo `.pr2`/`.sq2` e a ausência de gatilho ao salvar para `.rpt` permanecem inalterados.
+
 ## [1.3.0]
 
 - Feat: novo fluxo **`.rpt` → `.RPA`** (relatórios do **Crystal Reports**). Nos comandos **Compilar todo o repositório** e **Compilar arquivos alterados (git)**, gera o arquivo texto `.RPA` de cada `.rpt`, permitindo versionar/comparar (diff) os relatórios binários. Usa o `GeradorDiferencasRelatorio` embarcado em `bin/rpt2rpa`, acionado pelo VFP9 via COM (espelha o padrão do FoxBin2Prg). **Não há gatilho ao salvar** — o `.rpt` é binário; a geração ocorre apenas nos comandos de build. **Desativado por padrão** (nova configuração `visualFoxproCompiler.enableRpt2Rpa`).

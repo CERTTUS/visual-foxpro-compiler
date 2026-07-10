@@ -2,7 +2,7 @@
   "name": "visual-foxpro-compiler",
   "displayName": "Visual Foxpro PR2 compiler",
   "description": "Ao salvar um .pr2: gera o .prg (UTF-8 para Windows-1252, se ativado) e compila para .FXP. Ao salvar um .sq2: gera o .SQL (modelagem PostgreSQL) convertendo UTF-8 para Windows-1252. Ao salvar .sc2/.vc2/.fr2/.lb2/.mn2/.pj2/.dc2: gera os binários VFP (PRG2BIN) via FoxBin2Prg embarcado. Ao compilar o repositório/alterados: gera o .RPA (texto) dos relatórios Crystal Reports (.rpt), se ativado.",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "publisher": "vfcompiler",
   "author": "Marco Plaza",
   "icon": "images/nfoxLogo.png",
@@ -45,7 +45,7 @@
         "visualFoxproCompiler.enableRpt2Rpa": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Ao compilar o repositório ou os arquivos alterados (git): gerar o arquivo texto **`.RPA`** de cada relatório do **Crystal Reports** (`.rpt`), usando o `GeradorDiferencasRelatorio` embarcado acionado pelo Visual FoxPro 9 (COM). O `.RPA` permite versionar/comparar os relatórios (binários) no controle de versão.\n\n**Desativado por padrão.** Requer, além do VFP9: **Crystal Reports XI (11)** registrado (`CrystalRuntime.Application.11`); um arquivo `CFG\\CONEXAO.MEM` acessível a partir da pasta do `.rpt`; e conexão **PostgreSQL** ativa (a seção de SQL do relatório é resolvida contra o banco). Não há gatilho ao salvar — o `.rpt` é binário; a geração ocorre apenas nos comandos de build."
+          "markdownDescription": "No comando **Compilar todo o repositório**: gerar o arquivo texto **`.RPA`** de cada relatório do **Crystal Reports** (`.rpt`), usando o `GeradorDiferencasRelatorio` embarcado acionado pelo Visual FoxPro 9 (COM). O `.RPA` permite versionar/comparar os relatórios (binários) no controle de versão.\n\n**Desativado por padrão** (o build do repositório inteiro pode ser custoso e exige Crystal/banco).\n\n> **Importante:** esta opção **não** afeta o comando **Compilar arquivos alterados (git)** — nele, um `.rpt` novo/alterado **sempre** gera o `.RPA`, para versionar o diff do que mudou.\n\nRequer, além do VFP9: **Crystal Reports XI (11)** registrado (`CrystalRuntime.Application.11`); um arquivo `CFG\\CONEXAO.MEM` acessível a partir da pasta do `.rpt`; e conexão **PostgreSQL** ativa (a seção de SQL do relatório é resolvida contra o banco). Não há gatilho ao salvar — o `.rpt` é binário; a geração ocorre apenas nos comandos de build."
         },
         "visualFoxproCompiler.confirmBuildRepository": {
           "type": "boolean",
