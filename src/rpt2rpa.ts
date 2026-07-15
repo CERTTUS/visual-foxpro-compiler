@@ -59,8 +59,11 @@ export async function convertRpt2Rpa(
     const statusFile = path.join(os.tmpdir(), `rpt2rpa_status_${stamp}.txt`);
 
     try {
-        // Timeout amplo: Crystal + consulta ao banco podem ser lentos.
-        const { code, stderr } = await execCscript(foxPath, [vbs, rptPath, statusFile], 600000);
+        // Timeout amplo: Crystal + consulta ao banco podem ser lentos. Relatórios
+        // grandes (muitos subrelatórios/objetos) podem levar dezenas de minutos, pois
+        // o gerador avalia cada objeto/campo via COM contra o banco. Caso real medido:
+        // ~28 min para um relatório com 18 subrelatórios (RPA de ~930 KB). 40 min de folga.
+        const { code, stderr } = await execCscript(foxPath, [vbs, rptPath, statusFile], 2400000);
 
         let statusMsg = '';
         try {

@@ -15,6 +15,8 @@
 PARAMETERS cRelatorio
 PRIVATE    cRelatorio, lGerouComSucesso, cDiretorioRelatorio
 
+	*-- [rpt2rpa] Evita modal 'overwrite?' (DSN/RPA) que trava o headless via COM.
+	SET SAFETY OFF
 	lGerouComSucesso = .T.
 	cDiretorioRelatorio = SUBSTR(cRelatorio, 1, ATC("\", cRelatorio, OCCURS("\", cRelatorio)))			
 	P_ArquivoDSNAtualizar(cDiretorioRelatorio)
@@ -39,6 +41,17 @@ PRIVATE    cRelatorio, lGerouComSucesso, cDiretorioRelatorio
 	********************			
 		oCrystal = CREATEOBJECT("CrystalRuntime.Application.11")
 		oRelatorio = oCrystal.OpenReport(cRelatorio)
+		*-- [rpt2rpa] Headless: suprime prompt de parametros e barra de progresso
+		*   do Crystal (modais que travam a automacao COM). NAO usa SetLogOnInfo
+		*   para nao alterar a connection do relatorio (mantem o FILEDSN original).
+		TRY
+			oRelatorio.EnableParameterPrompting = .F.
+		CATCH
+		ENDTRY
+		TRY
+			oRelatorio.DisplayProgressDialog = .F.
+		CATCH
+		ENDTRY
 
 	***************************************
 	* Imprime informações dos relatórios. *
@@ -1413,6 +1426,11 @@ PRIVATE    oRelatorioSections, nSectionsContador, nSectionsTotal, ;
 				ENDSCAN
 
 				oRelatorioSubreport = oRelatorioReportObjects.OpenSubreport
+				*-- [rpt2rpa] Headless: suprime prompt de parametros tambem no subrelatorio
+				TRY
+					oRelatorioSubreport.EnableParameterPrompting = .F.
+				CATCH
+				ENDTRY
 				P_ImprimirLinks(oRelatorioReportObjects.Links, oRelatorioSubreport.ParameterFields, ALLTRIM(oRelatorioReportObjects.SubreportName))
 				F_ImprimirSQL(oRelatorioSubreport)
 				F_ImprimirParametros(oRelatorioSubreport.ParameterFields)

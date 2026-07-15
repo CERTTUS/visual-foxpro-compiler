@@ -58,9 +58,16 @@ End If
 
 nExitCode = oVFP9.Eval("IIF(TYPE('_screen.o_Rpt2Rpa_ExitCode')='N', _screen.o_Rpt2Rpa_ExitCode, 0)")
 If Err.Number <> 0 Then nExitCode = 0
-On Error Goto 0
 
+' Encerra a instancia do VFP9 de forma determinista. Sem o Quit explicito, o VFP9
+' iniciado por Automation (com objetos COM do Crystal) pode nao fechar sozinho ao
+' liberar a referencia — deixando processos orfaos que penduram o cscript e sujam
+' o ambiente COM da proxima execucao (comportamento intermitente do Crystal RDC).
+On Error Resume Next
+oVFP9.DoCmd("CLOSE ALL")
 oVFP9.DoCmd("CLEAR ALL")
+oVFP9.Quit
 Set oVFP9 = Nothing
+On Error Goto 0
 
 WScript.Quit nExitCode

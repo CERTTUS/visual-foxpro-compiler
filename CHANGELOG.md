@@ -1,6 +1,15 @@
 # Change Log
 
 
+## [1.3.3]
+
+- Fix: o fluxo **`.rpt` → `.RPA`** travava indefinidamente no modo headless (automação COM). Causa: com o `SET SAFETY` do VFP em ON (padrão), o `SET DEVICE TO FILE C:\CERTTUS\CERTTUS.dsn` do gerador abria um modal **"already exists, overwrite it?"** que ficava **invisível** (o VFP9 roda oculto via COM) e pendurava o `cscript`. Correção: **`SET SAFETY OFF`** no gerador, eliminando o modal de confirmação de sobrescrita (do DSN e do `.RPA`).
+- Change: no gerador headless, o **prompt de parâmetros** e a **barra de progresso** do Crystal são suprimidos (`EnableParameterPrompting = .F.` no relatório e nos subrelatórios, `DisplayProgressDialog = .F.`), evitando outros modais que travariam a automação. A geração passa a ser 100% automática (valores default nos parâmetros).
+- Fix: **não** é usado `SetLogOnInfo`. A conexão é resolvida pelo **File DSN** original do relatório (`FILEDSN=C:\Certtus\Certtus.dsn`). Uma abordagem anterior chamava `SetLogOnInfo(IP, base, ...)`, o que **alterava a connection** do relatório (`LogOnServerName` passava do File DSN para o IP, com `PreQEServerName`/`LogOnDatabaseName` preenchidos) e causava erro **ODBC IM002** ("data source name not found") nos subrelatórios. Removido — a connection do `.RPA` volta ao formato correto.
+- Fix: encerramento determinístico da instância do VFP9 no `Run-Rpt2Rpa-VFP9.vbs` (`CLOSE ALL` / `CLEAR ALL` / `Quit`), evitando processos órfãos do VFP9/Crystal RDC que penduravam o `cscript`.
+- Change: o timeout do `cscript` no fluxo `.rpt` → `.RPA` passou de 10 min para **40 min**. Relatórios grandes levam dezenas de minutos, pois o gerador avalia cada objeto/campo via COM contra o banco — caso real medido: ~28 min para um relatório com 18 subrelatórios (RPA de ~930 KB, idêntico ao gerado no ambiente original). Não há como acelerar sem reduzir o que o `.RPA` captura (o gargalo é o Crystal RDC, não o código): uma tentativa de cache dos objetos COM não trouxe ganho.
+- O `GeradorDiferencasRelatorio.PRG` embarcado (Windows-1252) foi recompilado para `.FXP` pelo compilador embarcado.
+
 ## [1.3.1]
 
 - Change: no comando **Compilar arquivos alterados (git)**, um relatório `.rpt` novo/alterado **sempre** gera o `.RPA`, independentemente da configuração `enableRpt2Rpa`. O objetivo é versionar o diff do que mudou sem exigir uma opção ligada. A configuração `enableRpt2Rpa` passa a controlar **apenas** o comando **Compilar todo o repositório** (build completo, mais custoso). O fluxo `.pr2`/`.sq2` e a ausência de gatilho ao salvar para `.rpt` permanecem inalterados.
