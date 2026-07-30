@@ -1,0 +1,5 @@
+#!/bin/sh
+# Wrapper sh dispatchado pelo git apos merge/pull (core.hooksPath).
+set -e
+repo_root="$(git rev-parse --show-toplevel)"
+exec pwsh -NoProfile -File "$repo_root/tools/git-hooks/hooks/post-merge.ps1" "$@"

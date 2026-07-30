@@ -1,6 +1,14 @@
 # Change Log
 
 
+## [1.3.5] — CERTTUS Plus (fork local)
+
+- Feat: **compilação automática após `git pull`**. O hook `post-merge` cria `.git/certtus-compile-pull.pending` quando o pull traz fontes VFP; a extensão detecta (via `fs.watch` e na ativação) e executa **Compilar arquivos do pull (git)**. Nova configuração `visualFoxproCompiler.autoCompileOnPull` (padrão: `true`). Opt-out por pull: `CERTTUS_SKIP_COMPILE_PULL=1 git pull`.
+
+## [1.3.4] — CERTTUS Plus (fork local)
+
+- Feat: novo comando **`Visual FoxPro: Compilar arquivos do pull (git)`** (`visualFoxproCompiler.buildPulledFiles`). Compila apenas os fontes FoxPro trazidos pelo último `git pull` / merge (`git diff --name-only -z ORIG_HEAD HEAD`), na mesma ordem de dependência dos demais comandos de build. Resolve o caso em que o working tree está limpo após o pull — o comando "Compilar arquivos alterados (git)" não enxerga esses arquivos. Atalho padrão **`Ctrl+Shift+Alt+P`**.
+
 ## [1.3.3]
 
 - Fix: o fluxo **`.rpt` → `.RPA`** travava indefinidamente no modo headless (automação COM). Causa: com o `SET SAFETY` do VFP em ON (padrão), o `SET DEVICE TO FILE C:\CERTTUS\CERTTUS.dsn` do gerador abria um modal **"already exists, overwrite it?"** que ficava **invisível** (o VFP9 roda oculto via COM) e pendurava o `cscript`. Correção: **`SET SAFETY OFF`** no gerador, eliminando o modal de confirmação de sobrescrita (do DSN e do `.RPA`).
