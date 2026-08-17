@@ -125,6 +125,37 @@ export async function convertPrg2Bin(
     return { success: true, outputs };
 }
 
+/**
+ * Converte um binário VFP de volta para o texto FoxBin2Prg (BIN2PRG) — direção inversa
+ * de `convertPrg2Bin`, sobrescrevendo o texto de mesmo nome no diretório do binário.
+ *
+ * Usado pela guarda de auto-include do build de EXE: após o `BUILD EXE ... RECOMPILE`, o
+ * VFP9 grava no `.pjx` as dependências que ele mesmo detectou; regenerando o `.pj2` e
+ * comparando com a lista de entrada, descobrimos o que entrou sem ter sido pedido.
+ */
+export async function convertBin2Prg(
+    binPath: string,
+    extensionPath: string
+): Promise<FoxBin2PrgResult> {
+    const { foxPath, vbs } = enginePaths(extensionPath);
+    if (!fs.existsSync(vbs)) {
+        return { success: false, outputs: [], message: `Motor FoxBin2Prg não encontrado: ${vbs}` };
+    }
+    if (!fs.existsSync(binPath)) {
+        return { success: false, outputs: [], message: `Binário não encontrado: ${binPath}` };
+    }
+
+    const { code, stderr } = await execCscript(foxPath, [vbs, binPath, 'BIN2PRG'], 120000);
+    if (code !== 0) {
+        return {
+            success: false,
+            outputs: [],
+            message: `FoxBin2Prg (BIN2PRG) retornou código ${code}${stderr ? `\n${stderr}` : ''}`,
+        };
+    }
+    return { success: true, outputs: [] };
+}
+
 export interface FoxBin2PrgFolderResult {
     success: boolean;
     /** Quantidade de arquivos de texto considerados na pasta. */

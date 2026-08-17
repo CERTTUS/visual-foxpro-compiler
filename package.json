@@ -2,7 +2,7 @@
   "name": "visual-foxpro-compiler",
   "displayName": "Visual Foxpro PR2 compiler",
   "description": "Ao salvar um .pr2: gera o .prg (UTF-8 para Windows-1252, se ativado) e compila para .FXP. Ao salvar um .sq2: gera o .SQL (modelagem PostgreSQL) convertendo UTF-8 para Windows-1252. Ao salvar .sc2/.vc2/.fr2/.lb2/.mn2/.pj2/.dc2: gera os binários VFP (PRG2BIN) via FoxBin2Prg embarcado. Ao compilar o repositório/alterados: gera o .RPA (texto) dos relatórios Crystal Reports (.rpt), se ativado.",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "publisher": "vfcompiler",
   "author": "Marco Plaza",
   "icon": "images/nfoxLogo.png",
@@ -46,6 +46,22 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "No comando **Compilar todo o repositório**: gerar o arquivo texto **`.RPA`** de cada relatório do **Crystal Reports** (`.rpt`), usando o `GeradorDiferencasRelatorio` embarcado acionado pelo Visual FoxPro 9 (COM). O `.RPA` permite versionar/comparar os relatórios (binários) no controle de versão.\n\n**Desativado por padrão** (o build do repositório inteiro pode ser custoso e exige Crystal/banco).\n\n> **Importante:** esta opção **não** afeta o comando **Compilar arquivos alterados (git)** — nele, um `.rpt` novo/alterado **sempre** gera o `.RPA`, para versionar o diff do que mudou.\n\nRequer, além do VFP9: **Crystal Reports XI (11)** registrado (`CrystalRuntime.Application.11`); um arquivo `CFG\\CONEXAO.MEM` acessível a partir da pasta do `.rpt`; e conexão **PostgreSQL** ativa (a seção de SQL do relatório é resolvida contra o banco). Não há gatilho ao salvar — o `.rpt` é binário; a geração ocorre apenas nos comandos de build."
+        },
+        "visualFoxproCompiler.enablePj2Exe": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Gerar o **executável** (`.EXE`) dos projetos `.pj2`: além do `PJX/PJT`, executa `BUILD EXE ... RECOMPILE` no Visual FoxPro 9. Vale ao **salvar** um `.pj2` e nos comandos de compilação.\n\n> **O build usa o mouse.** O `BUILD EXE` do VFP9 abre o diálogo *Locate File*, cujos botões só respondem a clique de hardware — a extensão move o cursor e clica em **Ignore** enquanto o diálogo aparecer. Durante esses minutos, não use o mouse.\n\nApós o build, o VFP costuma acrescentar ao projeto dependências que detectou sozinho (inchando o EXE). A extensão detecta essas inclusões, marca-as como excludentes e refaz o build até estabilizar; as exclusões descobertas ficam gravadas no `.pj2` (aparecem como diff no git para você revisar). A versão do EXE é a que estiver no bloco `<DevInfo>` do `.pj2` — a extensão não versiona automaticamente."
+        },
+        "visualFoxproCompiler.vfp9Path": {
+          "type": "string",
+          "default": "",
+          "description": "Caminho completo do vfp9.exe, usado no BUILD EXE dos projetos .pj2. Vazio: procura em 'C:\\Program Files (x86)\\Microsoft Visual FoxPro 9\\vfp9.exe' e 'C:\\Program Files\\Microsoft Visual FoxPro 9\\vfp9.exe'."
+        },
+        "visualFoxproCompiler.pj2ExeTimeoutMinutes": {
+          "type": "number",
+          "default": 15,
+          "minimum": 1,
+          "description": "Tempo máximo (em minutos) de cada BUILD EXE de projeto .pj2. Esgotado o prazo, o vfp9.exe é encerrado e o build é reportado como falha."
         },
         "visualFoxproCompiler.confirmBuildRepository": {
           "type": "boolean",

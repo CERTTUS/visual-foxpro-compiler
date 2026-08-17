@@ -16,6 +16,10 @@ A extensão atua ao salvar arquivos, conforme a extensão:
   | `.pj2` | `.pjx` / `.pjt` | Projetos |
   | `.dc2` | `.dbc` / `.dct` / `.dcx` | Bancos de dados |
 
+Para os projetos, há um passo a mais:
+
+- **`.pj2`** → além do `.pjx`/`.pjt`, gera o **`.EXE`** do projeto (`BUILD EXE ... RECOMPILE` no VFP9). Vale ao salvar o `.pj2` e nos comandos de compilação, onde o projeto é sempre o último passo. Controlado por `enablePj2Exe` (ativado por padrão) — ver [Build do EXE](#build-do-exe-pj2--exe).
+
 Além disso, nos comandos de compilação (repositório/alterados):
 
 - **`.rpt`** (relatórios do **Crystal Reports**) → gera o **`.RPA`** (arquivo texto) de mesmo nome/diretório, usando o `GeradorDiferencasRelatorio` embarcado, acionado pelo Visual FoxPro 9 (COM). O `.RPA` permite versionar e comparar (diff) os relatórios binários no controle de versão. **Não há gatilho ao salvar** — o `.rpt` é binário; a geração ocorre apenas nos comandos de build. No **Compilar arquivos alterados (git)**, um `.rpt` alterado **sempre** gera o `.RPA`; no **Compilar todo o repositório**, depende da configuração `enableRpt2Rpa` (desativada por padrão). Exige Crystal Reports e banco (ver [Requisitos](#requisitos)).
@@ -63,18 +67,50 @@ A pausa acontece **entre arquivos** — o arquivo em processamento sempre termin
 
 > **Ordem das classes/formulários**: no build, as `VC2` (classes) são geradas **antes** das `SC2` (formulários), pois os formulários incorporam as classes. Entre as bibliotecas `VC2`, a ordem segue a configuração `visualFoxproCompiler.vcxBuildOrder` (padrão: `vclFormularios`, `vclComponentesBasicos`, `vclComponentesIntegrados`); as demais `VC2` seguem em ordem alfabética e o `PJ2` (projeto) é processado por último. Tudo numa única sessão do VFP9 por pasta.
 
+## Build do EXE (`.pj2` → `.EXE`)
+
+```
+.pj2  --PRG2BIN-->  .pjx / .pjt  --BUILD EXE RECOMPILE-->  .EXE
+```
+
+> ⚠️ **O build usa o mouse.** O `BUILD EXE` do VFP9 abre o diálogo *Locate File*, cujos botões são custom-drawn e ignoram mensagens (`BM_CLICK` não funciona). A extensão move o cursor e clica em **Ignore** enquanto o diálogo aparecer. Durante esses minutos, não use o mouse. Para desligar o build de EXE, use `enablePj2Exe`.
+
+Só o botão **Ignore** (2º) é clicado: o 3º ora é "Ignore all", ora "Remove" — e "Remove" *editaria a lista de arquivos do projeto*. O `RECOMPILE` também não é opcional: sem ele, `BUILD EXE ... FROM <pjx>` não gera o executável.
+
+**HomeDir** — o `.pj2` versionado carrega o `HomeDir` da máquina de quem o commitou; o PRG2BIN grava esse caminho no `.pjx` e o build não encontra os fontes. A extensão aponta o HomeDir para a pasta local antes de gerar o `.pjx` e **restaura o valor original** ao final, para o arquivo versionado não ficar sujo com um caminho de máquina.
+
+**Auto-include** — depois do build, o VFP acrescenta ao projeto dependências que detectou sozinho, inchando o EXE. A extensão regenera o `.pj2` (BIN2PRG), compara com a lista original, marca os novos como excludentes e refaz o build até estabilizar (até 3 passadas):
+
+```
+BUILD EXE (passada 1): CERTTUS.EXE
+Auto-include detectado (3): consulta.prg, util.vcx, rel.frx — marcando como excludente e rebuildando.
+BUILD EXE (passada 2): CERTTUS.EXE
+[INFO] CERTTUS.pj2 atualizado com 3 exclusão(ões) permanente(s) — revise o diff no git.
+[OK]  EXE  C:\...\CERTTUS.EXE (2 passadas — auto-include tratado)
+```
+
+As exclusões ficam gravadas no `.pj2` (auto-cura: o próximo build não repete o drift) e aparecem como diff no git para você revisar antes de commitar.
+
+**Versão do EXE** — é a do bloco `<DevInfo>` do `.pj2` (`_MajorVer`/`_MinorVer`/`_Revision`), como você definiu. A extensão não versiona automaticamente; o versionamento por release é responsabilidade da pipeline.
+
+> Se a chave `_STARTUP` do VFP9 estiver preenchida no registro (Task Pane), o Output avisa — ela pode abrir um modal que trava o build. A extensão não altera o registro; a limpeza é sua.
+
 ## Configuração
 
 - **visualFoxproCompiler.convertEncodingBeforeCompile** — Se ativado, o conteúdo UTF-8 do `.pr2` é gravado no `.prg` (e o do `.sq2` no `.SQL`) em Windows-1252. Se desativado, os bytes são copiados sem conversão.
 - **visualFoxproCompiler.enableFoxBin2Prg** — Ativa a geração de binários VFP (PRG2BIN) ao salvar arquivos de texto FoxBin2Prg. Padrão: ativado.
 - **visualFoxproCompiler.enableRpt2Rpa** — No comando **Compilar todo o repositório**, gera o `.RPA` (texto) de cada relatório Crystal Reports (`.rpt`) via VFP9 + Crystal 11. Padrão: **desativado** (requer Crystal Reports e banco — ver Requisitos). **Não afeta** o comando **Compilar arquivos alterados (git)**, no qual um `.rpt` alterado sempre gera o `.RPA`.
 - **visualFoxproCompiler.foxBin2PrgUtf8** — Trata os arquivos de texto FoxBin2Prg como UTF-8: converte para Windows-1252 apenas durante o PRG2BIN e mantém o arquivo em UTF-8 no disco. Padrão: ativado.
+- **visualFoxproCompiler.enablePj2Exe** — Gera o `.EXE` dos projetos `.pj2` (`BUILD EXE ... RECOMPILE`), ao salvar e nos comandos de compilação. Padrão: ativado. **O build usa o mouse** (ver [Build do EXE](#build-do-exe-pj2--exe)).
+- **visualFoxproCompiler.vfp9Path** — Caminho do `vfp9.exe` usado no build do EXE. Vazio: procura nos caminhos padrão de instalação.
+- **visualFoxproCompiler.pj2ExeTimeoutMinutes** — Tempo máximo de cada `BUILD EXE`. Padrão: 15 minutos.
 - **visualFoxproCompiler.confirmBuildRepository** — Pede confirmação antes de compilar todo o repositório. Padrão: ativado. (A descrição desta configuração contém o link para acionar a compilação.)
 - **visualFoxproCompiler.vcxBuildOrder** — Ordem de compilação das bibliotecas de classes (VC2), por nome. Padrão: `vclFormularios`, `vclComponentesBasicos`, `vclComponentesIntegrados`.
 
 ## Requisitos
 
 - Windows (win32)
+- **Fluxo `.pj2` → `.EXE`** — exige o `vfp9.exe` (o IDE, não só o runtime) e uma sessão interativa com mouse disponível, pois o auto-clique é de hardware. Não funciona em sessão headless/bloqueada.
 - **Visual FoxPro 9 instalado** na máquina. O fluxo `.pr2` usa os binários do compilador incluídos na extensão; o fluxo FoxBin2Prg aciona o VFP9 via automação COM (`VisualFoxPro.Application.9`) rodando o `foxbin2prg.prg` embarcado em `bin/foxbin2prg`.
 - **Fluxo `.rpt` → `.RPA` (opcional, `enableRpt2Rpa`)** — além do VFP9, exige:
   - **Crystal Reports XI (11)** instalado e registrado (`CrystalRuntime.Application.11`);

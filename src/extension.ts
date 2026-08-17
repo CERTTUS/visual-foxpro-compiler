@@ -13,6 +13,7 @@ import {
 } from './foxbin2prg';
 import { convertRpt2Rpa, isRptFile } from './rpt2rpa';
 import { PauseController, registerPauseCommand } from './pause';
+import { buildExeFromPj2, isPj2File, Pj2ExeResult } from './pj2exe';
 
 /** Ordem padrão de compilação das bibliotecas de classes (VC2), por nome. */
 const DEFAULT_VCX_ORDER = ['vclFormularios', 'vclComponentesBasicos', 'vclComponentesIntegrados'];
@@ -301,6 +302,21 @@ async function runFoxBin2Prg(
         await ensureConstCompiled(wsFolder.uri.fsPath, compilerPath, convertEncoding, outputChannel);
     }
 
+    // Projeto: o build do EXE já faz o PRG2BIN (com o HomeDir ajustado), então substitui
+    // a conversão simples quando `enablePj2Exe` está ativo.
+    if (isPj2File(textPath) && config.get<boolean>('enablePj2Exe', true)) {
+        const exe = await runPj2Exe(textPath, context, config, outputChannel);
+        reportPj2Exe(textPath, exe, outputChannel);
+        outputChannel.appendLine('---');
+        if (exe.success) {
+            vscode.window.setStatusBarMessage('EXE gerado', 10000);
+        } else {
+            vscode.window.showErrorMessage('Erro ao gerar o EXE do projeto.');
+            outputChannel.show(true);
+        }
+        return;
+    }
+
     outputChannel.appendLine(`FoxBin2Prg (PRG2BIN): ${textPath}`);
     vscode.window.setStatusBarMessage('Gerando binário VFP (FoxBin2Prg)...', 5000);
 
@@ -328,6 +344,38 @@ async function runFoxBin2Prg(
     }
     outputChannel.appendLine('---');
     vscode.window.setStatusBarMessage('Binário VFP gerado', 10000);
+}
+
+/**
+ * Gera o `.EXE` de um projeto `.pj2` (PRG2BIN + BUILD EXE RECOMPILE, com a guarda de
+ * auto-include). O build usa o mouse — o `BUILD EXE` do VFP9 só roda com o auto-clique
+ * no diálogo "Locate File" — por isso o aviso antes de começar.
+ */
+async function runPj2Exe(
+    pj2Path: string,
+    context: vscode.ExtensionContext,
+    config: vscode.WorkspaceConfiguration,
+    outputChannel: vscode.OutputChannel
+): Promise<Pj2ExeResult> {
+    const wsFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(pj2Path));
+    const timeoutMinutes = config.get<number>('pj2ExeTimeoutMinutes', 15);
+
+    vscode.window.setStatusBarMessage(
+        `Gerando ${path.basename(pj2Path, path.extname(pj2Path))}.EXE — o build usará o mouse...`,
+        15000
+    );
+    outputChannel.appendLine(
+        `EXE (PJ2) ${pj2Path} — o VFP9 será aberto e o mouse usado para responder ao diálogo "Locate File".`
+    );
+
+    return buildExeFromPj2(pj2Path, {
+        extensionPath: context.extensionPath,
+        vfp9Path: config.get<string>('vfp9Path', '') || undefined,
+        timeoutMs: Math.max(1, timeoutMinutes) * 60000,
+        maxPasses: 3,
+        rootDir: wsFolder ? wsFolder.uri.fsPath : path.dirname(pj2Path),
+        log: (m) => outputChannel.appendLine(m),
+    });
 }
 
 /** Glob (case-insensitive) das extensões de texto FoxBin2Prg, p.ex. `sc2,SC2,vc2,...`. */
@@ -425,7 +473,13 @@ async function compileFileSet(
     const enableFoxBin2Prg = config.get<boolean>('enableFoxBin2Prg', true);
     const vcxOrder = config.get<string[]>('vcxBuildOrder', DEFAULT_VCX_ORDER);
 
+    const enablePj2Exe = config.get<boolean>('enablePj2Exe', true);
+
     const texts = enableFoxBin2Prg ? textPaths : [];
+    // Projetos: com o build de EXE ativo, o `.pj2` sai do lote FoxBin2Prg e vai para o
+    // passo 3 — lá o PRG2BIN roda com o HomeDir ajustado, seguido do BUILD EXE.
+    const pj2Projects = enablePj2Exe ? texts.filter(isPj2File) : [];
+    const foxTexts = enablePj2Exe ? texts.filter((p) => !isPj2File(p)) : texts;
     // Os `.rpt` já vêm filtrados pelo chamador: "Compilar todo o repositório" respeita
     // `enableRpt2Rpa`; "Compilar alterados (git)" sempre inclui os `.rpt` alterados.
     const rpts = rptPaths;
@@ -445,6 +499,8 @@ async function compileFileSet(
     let foxOk = 0;
     let foxWarn = 0;
     let foxFail = 0;
+    let exeOk = 0;
+    let exeFail = 0;
 
     // Pausa/retomada pela barra de status (a notificação de progresso não aceita
     // botões customizados; nela permanece apenas o Cancelar nativo).
@@ -555,13 +611,13 @@ async function compileFileSet(
 
             // 2) FoxBin2Prg -> binários VFP, respeitando a ordem (VC2 antes de SC2),
             //    em uma única sessão do VFP9 por workspace folder.
-            if (texts.length > 0) {
+            if (foxTexts.length > 0) {
                 for (const folder of folders) {
                     if (!(await gate())) {
                         return;
                     }
                     const folderPath = folder.uri.fsPath;
-                    const filesInFolder = texts.filter((p) => isUnder(p, folderPath));
+                    const filesInFolder = foxTexts.filter((p) => isUnder(p, folderPath));
                     if (filesInFolder.length === 0) {
                         continue;
                     }
@@ -628,6 +684,27 @@ async function compileFileSet(
                     }
                 }
             }
+
+            // 3) PJ2 -> PJX + EXE (por último: o projeto referencia todo o resto, que já
+            //    foi regenerado acima). Um projeto por vez — o BUILD EXE abre o VFP9.
+            for (const pj2Path of pj2Projects) {
+                if (!(await gate())) {
+                    return;
+                }
+                advance(path.basename(pj2Path));
+                let result: Pj2ExeResult;
+                try {
+                    result = await runPj2Exe(pj2Path, context, config, outputChannel);
+                } catch (err) {
+                    result = { success: false, passes: 0, excluded: [], message: (err as Error).message };
+                }
+                if (result.success) {
+                    exeOk++;
+                } else {
+                    exeFail++;
+                }
+                reportPj2Exe(pj2Path, result, outputChannel);
+            }
         }
     );
 
@@ -638,10 +715,11 @@ async function compileFileSet(
         pause.dispose();
     }
 
-    const summary = `Compilação concluída: PR2 ${pr2Ok} ok / ${pr2Fail} erro(s); SQ2 ${sqlOk} ok / ${sqlFail} erro(s); RPT ${rpaOk} ok / ${rpaFail} erro(s); FoxBin2Prg ${foxOk} ok / ${foxWarn} aviso(s) / ${foxFail} erro(s).`;
+    const exeResumo = pj2Projects.length > 0 ? ` EXE ${exeOk} ok / ${exeFail} erro(s);` : '';
+    const summary = `Compilação concluída: PR2 ${pr2Ok} ok / ${pr2Fail} erro(s); SQ2 ${sqlOk} ok / ${sqlFail} erro(s); RPT ${rpaOk} ok / ${rpaFail} erro(s);${exeResumo} FoxBin2Prg ${foxOk} ok / ${foxWarn} aviso(s) / ${foxFail} erro(s).`;
     outputChannel.appendLine(summary);
     outputChannel.appendLine('---');
-    if (pr2Fail > 0 || sqlFail > 0 || rpaFail > 0 || foxFail > 0 || foxWarn > 0) {
+    if (pr2Fail > 0 || sqlFail > 0 || rpaFail > 0 || exeFail > 0 || foxFail > 0 || foxWarn > 0) {
         vscode.window.showWarningMessage(summary);
     } else {
         vscode.window.showInformationMessage(summary);
@@ -985,6 +1063,16 @@ async function buildTarget(
         'Compilando seleção (Visual FoxPro)',
         `=== Compilar arquivo/diretório: ${label} ===`
     );
+}
+
+/** Escreve no Output o resultado do build de EXE de um projeto. */
+function reportPj2Exe(pj2Path: string, result: Pj2ExeResult, outputChannel: vscode.OutputChannel): void {
+    if (result.success) {
+        const extra = result.passes > 1 ? ` (${result.passes} passadas — auto-include tratado)` : '';
+        outputChannel.appendLine(`[OK]  EXE  ${result.exePath}${extra}`);
+    } else {
+        outputChannel.appendLine(`[ERRO] EXE  ${pj2Path}: ${result.message ?? ''}`);
+    }
 }
 
 /** Rótulo da extensão em maiúsculas para o log (ex.: `SC2`, `VC2`). */

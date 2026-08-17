@@ -1,6 +1,18 @@
 # Change Log
 
 
+## [1.6.0]
+
+- Feat: **build do executável** dos projetos `.pj2` — o fluxo passa a ser `.pj2` → `.pjx/.pjt` (PRG2BIN) → **`.EXE`** (`BUILD EXE ... RECOMPILE` no VFP9). Integrado: vale ao **salvar** um `.pj2` e nos três comandos de compilação (repositório, alterados e arquivo/diretório), onde o projeto é sempre o último passo. Nova configuração `visualFoxproCompiler.enablePj2Exe` (padrão: ativado), além de `vfp9Path` e `pj2ExeTimeoutMinutes`.
+- **O build usa o mouse.** O `BUILD EXE` abre o diálogo *Locate File*, cujos botões são custom-drawn e ignoram mensagens (`BM_CLICK` não funciona) — é preciso clique de hardware (`SetCursorPos` + `mouse_event`). O motor embarcado `bin/pj2exe/Build-Pj2Exe.ps1` detecta a janela pelo título, torna a thread DPI-aware (senão, em telas com escala ≠ 100%, o clique erra o botão) e clica **apenas** em "Ignore" (2º botão) — o 3º ora é "Ignore all", ora "Remove", e "Remove" editaria a lista de arquivos do projeto. A extensão avisa antes de começar.
+- O `RECOMPILE` não é opcional: sem ele, `BUILD EXE ... FROM <pjx>` (e o `loProject.Build` via automação) simplesmente não geram o executável.
+- **HomeDir**: o `.pj2` versionado carrega o `HomeDir` da máquina de quem o commitou; o PRG2BIN grava esse caminho no `.pjx` e o build não acha os fontes. A extensão ajusta o HomeDir para a pasta local antes de gerar o `.pjx` e **restaura o valor original** ao final — o arquivo versionado não fica sujo com um caminho de máquina.
+- **Guarda de auto-include**: depois do build, o VFP grava no `.pjx` dependências que ele mesmo detectou, inchando o EXE. A extensão regenera o `.pj2` (BIN2PRG), compara com a lista de entrada, marca os novos como excludentes e refaz o build até estabilizar (até 3 passadas). As exclusões descobertas são **persistidas no `.pj2`** (auto-cura: o próximo build não repete o drift) e reportadas no Output — aparecem como diff no git para revisão.
+- A versão do EXE é a do bloco `<DevInfo>` do `.pj2` (`_MajorVer`/`_MinorVer`/`_Revision`), como o desenvolvedor definiu — a extensão não versiona automaticamente (isso é da pipeline).
+- Se a chave `_STARTUP` do VFP9 estiver preenchida no registro (TaskPane), o Output avisa: ela pode abrir um modal que trava o build. A extensão **não** altera o registro.
+- Refactor: `convertBin2Prg` em `src/foxbin2prg.ts` (direção inversa do PRG2BIN, usada pela guarda) e novo módulo `src/pj2exe.ts` com a orquestração.
+- Portado do fluxo já validado em produção no `vfp-compiler-installer` (`VfpExeCompiler.ps1`), que não foi alterado.
+
 ## [1.5.0]
 
 - Feat: novo comando **`Visual FoxPro: Compilar arquivo ou diretório`** (`visualFoxproCompiler.buildTarget`). Compila um alvo escolhido pelo desenvolvedor, sem precisar salvar o arquivo nem varrer o repositório inteiro. Pela paleta, um menu pergunta o que compilar — **arquivo atual** (quando o editor ativo é um fonte suportado), **arquivo(s)** ou **pasta** — e abre o diálogo do sistema. O passo prévio existe porque, no Windows, o diálogo do VS Code não seleciona arquivos e pastas ao mesmo tempo.
