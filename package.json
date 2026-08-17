@@ -2,7 +2,7 @@
   "name": "visual-foxpro-compiler",
   "displayName": "Visual Foxpro PR2 compiler",
   "description": "Ao salvar um .pr2: gera o .prg (UTF-8 para Windows-1252, se ativado) e compila para .FXP. Ao salvar um .sq2: gera o .SQL (modelagem PostgreSQL) convertendo UTF-8 para Windows-1252. Ao salvar .sc2/.vc2/.fr2/.lb2/.mn2/.pj2/.dc2: gera os binários VFP (PRG2BIN) via FoxBin2Prg embarcado. Ao compilar o repositório/alterados: gera o .RPA (texto) dos relatórios Crystal Reports (.rpt), se ativado.",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "publisher": "vfcompiler",
   "author": "Marco Plaza",
   "icon": "images/nfoxLogo.png",
@@ -78,6 +78,11 @@
         "category": "Visual FoxPro"
       },
       {
+        "command": "visualFoxproCompiler.buildTarget",
+        "title": "Compilar arquivo ou diretório",
+        "category": "Visual FoxPro"
+      },
+      {
         "command": "visualFoxproCompiler.togglePause",
         "title": "Pausar/Retomar a compilação em andamento",
         "category": "Visual FoxPro"
@@ -88,6 +93,13 @@
         {
           "command": "visualFoxproCompiler.togglePause",
           "when": "visualFoxproCompiler.building"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "visualFoxproCompiler.buildTarget",
+          "when": "explorerResourceIsFolder || resourceExtname =~ /^\\.(pr2|sq2|rpt|sc2|vc2|fr2|lb2|mn2|pj2|dc2)$/i",
+          "group": "2_workspace"
         }
       ]
     },

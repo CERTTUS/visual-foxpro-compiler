@@ -78,9 +78,21 @@ export function activate(context: vscode.ExtensionContext) {
         () => buildChangedFiles(context, outputChannel)
     );
 
+    const buildTargetCmd = vscode.commands.registerCommand(
+        'visualFoxproCompiler.buildTarget',
+        (uri?: vscode.Uri, uris?: vscode.Uri[]) => buildTarget(context, outputChannel, uri, uris)
+    );
+
     const togglePauseCmd = registerPauseCommand();
 
-    context.subscriptions.push(disposable, buildCmd, buildChangedCmd, togglePauseCmd, outputChannel);
+    context.subscriptions.push(
+        disposable,
+        buildCmd,
+        buildChangedCmd,
+        buildTargetCmd,
+        togglePauseCmd,
+        outputChannel
+    );
 }
 
 interface Pr2Result {
@@ -736,6 +748,242 @@ async function buildChangedFiles(
         config,
         'Compilando alterados (Visual FoxPro)',
         '=== Compilar arquivos alterados (git) ==='
+    );
+}
+
+/** Extensões de fonte aceitas pelo comando "Compilar arquivo ou diretório". */
+const SUPPORTED_SOURCE_EXTENSIONS = ['.pr2', '.sq2', '.rpt', ...FOXBIN2PRG_TEXT_EXTENSIONS];
+
+/** Pastas ignoradas ao varrer um diretório (espelha o exclude do build do repositório). */
+const SCAN_EXCLUDE_DIRS = new Set(['node_modules', '.git', 'foxbin2prg', 'rpt2rpa']);
+
+/** Indica se o arquivo é um fonte suportado (PR2/SQ2/RPT ou texto FoxBin2Prg). */
+function isSupportedSource(filePath: string): boolean {
+    return SUPPORTED_SOURCE_EXTENSIONS.includes(path.extname(filePath).toLowerCase());
+}
+
+/**
+ * Varre `dir` recursivamente e devolve os fontes suportados. Usa `fs` (e não
+ * `findFiles`) para que o comando funcione também em pastas fora do workspace.
+ * Symlinks de diretório não são seguidos (evita ciclos).
+ */
+function collectSources(dir: string, acc: string[] = []): string[] {
+    let entries: fs.Dirent[];
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return acc;
+    }
+    for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            if (!SCAN_EXCLUDE_DIRS.has(entry.name.toLowerCase())) {
+                collectSources(full, acc);
+            }
+        } else if (entry.isFile() && isSupportedSource(full)) {
+            acc.push(full);
+        }
+    }
+    return acc;
+}
+
+interface TargetPick extends vscode.QuickPickItem {
+    /** `kind` é reservado pelo QuickPickItem (separadores), daí o nome `target`. */
+    target: 'active' | 'file' | 'folder';
+}
+
+/**
+ * Pergunta o que compilar (arquivo atual, arquivo(s) ou pasta) e abre o diálogo do
+ * sistema. O passo prévio é necessário porque, no Windows, o diálogo do VS Code não
+ * seleciona arquivos e pastas ao mesmo tempo.
+ */
+async function pickBuildTargets(): Promise<string[] | undefined> {
+    const items: TargetPick[] = [];
+    const activeDoc = vscode.window.activeTextEditor?.document;
+    if (activeDoc && isSupportedSource(activeDoc.fileName)) {
+        items.push({
+            target: 'active',
+            label: `$(file-code) Arquivo atual: ${path.basename(activeDoc.fileName)}`,
+            detail: activeDoc.fileName,
+        });
+    }
+    items.push(
+        {
+            target: 'file',
+            label: '$(file) Escolher arquivo(s)...',
+            detail: 'Um ou mais fontes (.pr2, .sq2, .rpt, .sc2, .vc2, .fr2, ...)',
+        },
+        {
+            target: 'folder',
+            label: '$(folder) Escolher pasta...',
+            detail: 'Todos os fontes da pasta, incluindo subpastas',
+        }
+    );
+
+    const choice = await vscode.window.showQuickPick(items, {
+        placeHolder: 'O que deseja compilar?',
+        ignoreFocusOut: true,
+    });
+    if (!choice) {
+        return undefined;
+    }
+    if (choice.target === 'active') {
+        return [activeDoc!.fileName];
+    }
+
+    const isFile = choice.target === 'file';
+    const selected = await vscode.window.showOpenDialog({
+        canSelectFiles: isFile,
+        canSelectFolders: !isFile,
+        canSelectMany: isFile,
+        openLabel: 'Compilar',
+        title: isFile ? 'Selecione o(s) fonte(s) a compilar' : 'Selecione a pasta a compilar',
+        defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+        filters: isFile
+            ? {
+                'Fontes Visual FoxPro': SUPPORTED_SOURCE_EXTENSIONS.map((e) => e.slice(1)),
+                'Todos os arquivos': ['*'],
+            }
+            : undefined,
+    });
+    return selected?.map((u) => u.fsPath);
+}
+
+/**
+ * Workspace folders que cobrem os alvos escolhidos — usados para garantir o `CONST.FXP`
+ * e para agrupar a sessão do VFP9. Alvos dentro do workspace usam a raiz do repositório
+ * (onde o CONST vive); alvos fora dele ganham um folder sintético com a própria pasta.
+ */
+function foldersForTargets(targets: string[]): vscode.WorkspaceFolder[] {
+    const byRoot = new Map<string, vscode.WorkspaceFolder>();
+    for (const target of targets) {
+        const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(target));
+        if (folder) {
+            byRoot.set(folder.uri.fsPath, folder);
+            continue;
+        }
+        let isDir = false;
+        try {
+            isDir = fs.statSync(target).isDirectory();
+        } catch {
+            /* alvo inacessível: trata como arquivo */
+        }
+        const dir = isDir ? target : path.dirname(target);
+        if (!byRoot.has(dir)) {
+            byRoot.set(dir, { uri: vscode.Uri.file(dir), name: path.basename(dir) || dir, index: -1 });
+        }
+    }
+    return [...byRoot.values()];
+}
+
+/**
+ * Comando "Compilar arquivo ou diretório": compila um alvo escolhido pelo desenvolvedor
+ * — um arquivo, vários arquivos ou uma pasta inteira (recursiva). Pode ser acionado pela
+ * paleta (com diálogo de seleção) ou pelo menu de contexto do Explorer, que passa o(s)
+ * `Uri` selecionado(s).
+ *
+ * Diferença em relação aos outros comandos, quanto aos `.rpt`: um relatório escolhido
+ * diretamente sempre gera o `.RPA` (a escolha foi explícita); os encontrados ao varrer
+ * uma pasta respeitam `enableRpt2Rpa`, pois cada um pode levar dezenas de minutos.
+ */
+async function buildTarget(
+    context: vscode.ExtensionContext,
+    outputChannel: vscode.OutputChannel,
+    uri?: vscode.Uri,
+    uris?: vscode.Uri[]
+): Promise<void> {
+    const config = vscode.workspace.getConfiguration('visualFoxproCompiler');
+
+    let targets: string[];
+    if (uris && uris.length > 0) {
+        targets = uris.map((u) => u.fsPath);
+    } else if (uri) {
+        targets = [uri.fsPath];
+    } else {
+        const picked = await pickBuildTargets();
+        if (!picked || picked.length === 0) {
+            return;
+        }
+        targets = picked;
+    }
+
+    const enableRpt2Rpa = config.get<boolean>('enableRpt2Rpa', false);
+    const enableFoxBin2Prg = config.get<boolean>('enableFoxBin2Prg', true);
+
+    /** Fontes indicados um a um (não vindos da varredura de uma pasta). */
+    const explicit = new Set<string>();
+    const files: string[] = [];
+    const unsupported: string[] = [];
+
+    for (const target of targets) {
+        let stat: fs.Stats;
+        try {
+            stat = fs.statSync(target);
+        } catch {
+            outputChannel.appendLine(`[ERRO] Alvo inacessível: ${target}`);
+            continue;
+        }
+        if (stat.isDirectory()) {
+            collectSources(target, files);
+        } else if (isSupportedSource(target)) {
+            explicit.add(target);
+            files.push(target);
+        } else {
+            unsupported.push(target);
+        }
+    }
+
+    if (unsupported.length > 0) {
+        vscode.window.showWarningMessage(
+            `Ignorado(s) por extensão não suportada: ${unsupported.map((p) => path.basename(p)).join(', ')}`
+        );
+    }
+
+    const unique = [...new Set(files)];
+    const pr2Paths = unique.filter((p) => p.toLowerCase().endsWith('.pr2'));
+    const sq2Paths = unique.filter((p) => p.toLowerCase().endsWith('.sq2'));
+    const rptPaths = unique.filter((p) => isRptFile(p) && (explicit.has(p) || enableRpt2Rpa));
+    const textPaths = enableFoxBin2Prg ? unique.filter((p) => isFoxBin2PrgText(p)) : [];
+
+    const rptSkipped = unique.filter((p) => isRptFile(p)).length - rptPaths.length;
+    if (rptSkipped > 0) {
+        outputChannel.appendLine(
+            `[INFO] ${rptSkipped} relatório(s) .rpt ignorado(s) na varredura da pasta — ative visualFoxproCompiler.enableRpt2Rpa para incluí-los (ou selecione o .rpt diretamente).`
+        );
+    }
+
+    const total = pr2Paths.length + sq2Paths.length + rptPaths.length + textPaths.length;
+    if (total === 0) {
+        vscode.window.showInformationMessage(
+            'Nenhum fonte FoxPro (.pr2/.sq2/.rpt/.sc2/.vc2/...) encontrado no alvo selecionado.'
+        );
+        return;
+    }
+
+    const label = targets.length === 1 ? targets[0] : `${targets.length} itens selecionados`;
+
+    if (config.get<boolean>('confirmBuildRepository', true) && total > 1) {
+        const pick = await vscode.window.showWarningMessage(
+            `Compilar ${label}? Serão processados ${pr2Paths.length} arquivo(s) .pr2, ${sq2Paths.length} arquivo(s) .sq2, ${rptPaths.length} relatório(s) .rpt e ${textPaths.length} texto(s) FoxBin2Prg. Binários existentes serão sobrescritos.`,
+            { modal: true },
+            'Compilar'
+        );
+        if (pick !== 'Compilar') {
+            return;
+        }
+    }
+
+    await compileFileSet(
+        pr2Paths,
+        textPaths,
+        sq2Paths,
+        rptPaths,
+        foldersForTargets(targets),
+        context,
+        outputChannel,
+        config,
+        'Compilando seleção (Visual FoxPro)',
+        `=== Compilar arquivo/diretório: ${label} ===`
     );
 }
 

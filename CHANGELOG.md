@@ -1,6 +1,15 @@
 # Change Log
 
 
+## [1.5.0]
+
+- Feat: novo comando **`Visual FoxPro: Compilar arquivo ou diretório`** (`visualFoxproCompiler.buildTarget`). Compila um alvo escolhido pelo desenvolvedor, sem precisar salvar o arquivo nem varrer o repositório inteiro. Pela paleta, um menu pergunta o que compilar — **arquivo atual** (quando o editor ativo é um fonte suportado), **arquivo(s)** ou **pasta** — e abre o diálogo do sistema. O passo prévio existe porque, no Windows, o diálogo do VS Code não seleciona arquivos e pastas ao mesmo tempo.
+- Feat: o mesmo comando aparece no **menu de contexto do Explorer** (botão direito) sobre pastas e sobre fontes `.pr2/.sq2/.rpt/.sc2/.vc2/.fr2/.lb2/.mn2/.pj2/.dc2`, aceitando **seleção múltipla**.
+- A pasta escolhida é varrida **recursivamente** (ignorando `node_modules`, `.git`, `foxbin2prg` e `rpt2rpa`), com `fs` em vez de `findFiles` — assim o comando também funciona em pastas **fora do workspace**. Nesse caso, o `CONST.FXP` é procurado na própria pasta escolhida; dentro do workspace, continua sendo o da raiz do repositório.
+- Reaproveita todo o núcleo existente: ordem de dependência (CONST → PR2 → VC2 antes de SC2 → PJ2), sessão única do VFP9, barra de progresso, **Pausar/Retomar** na barra de status e Cancelar.
+- Regra dos `.rpt`: um relatório **selecionado diretamente** sempre gera o `.RPA` (a escolha foi explícita); os encontrados ao **varrer uma pasta** respeitam `enableRpt2Rpa` — cada um pode levar dezenas de minutos. Quando algum é ignorado por essa regra, o Output informa a quantidade.
+- A confirmação antes de sobrescrever binários segue a configuração `confirmBuildRepository` e só aparece quando há mais de um arquivo (selecionar um único arquivo compila direto).
+
 ## [1.4.0]
 
 - Feat: **pausar/retomar** a compilação em lote. Durante os comandos **Compilar todo o repositório** e **Compilar arquivos alterados (git)**, um item aparece na **barra de status** mostrando o contador (`Pausar VFP 37/412`) e alternando entre **Pausar** e **Retomar** (destacado em amarelo quando pausado). O **Cancelar** continua no botão nativo da notificação de progresso. Também disponível na paleta de comandos como `Visual FoxPro: Pausar/Retomar a compilação em andamento` (visível apenas durante um build). A notificação de progresso do VS Code não aceita botões customizados — daí o botão viver na barra de status.

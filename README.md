@@ -31,9 +31,25 @@ Para quem clonou um repositório contendo **apenas os fontes** (texto) e precisa
 
 A ação varre o(s) workspace folder(s), gera `PRG`+`FXP` de todos os `.pr2`, os `.SQL` de todos os `.sq2` e os binários VFP (`SCX/VCX/FRX…`) de todos os textos FoxBin2Prg, mostrando o progresso e o resultado por arquivo no Output. Binários existentes são sobrescritos (há confirmação, controlável pela configuração `confirmBuildRepository`). O comando **`Visual FoxPro: Compilar arquivos alterados (git)`** (`Ctrl+Shift+Alt+S`) faz o mesmo apenas para os fontes modificados/criados segundo o git — incluindo os `.sq2`.
 
+## Compilar um arquivo ou um diretório
+
+Quando não se quer o repositório inteiro nem depender do que o git aponta como alterado, use **`Visual FoxPro: Compilar arquivo ou diretório`** (`Ctrl+Shift+P`). Um menu pergunta o que compilar:
+
+| Opção | O que faz |
+|-------|-----------|
+| **Arquivo atual** | Compila o fonte aberto no editor (só aparece se a extensão for suportada) |
+| **Escolher arquivo(s)…** | Diálogo do sistema, com seleção múltipla |
+| **Escolher pasta…** | Diálogo do sistema; compila todos os fontes da pasta, **incluindo subpastas** |
+
+O mesmo comando está no **menu de contexto do Explorer**: clique com o botão direito numa pasta ou num fonte (`.pr2`, `.sq2`, `.rpt`, `.sc2`, `.vc2`, `.fr2`, `.lb2`, `.mn2`, `.pj2`, `.dc2`) — a seleção múltipla também é aceita.
+
+A varredura ignora `node_modules`, `.git`, `foxbin2prg` e `rpt2rpa`, e vale inclusive para pastas **fora do workspace** (nesse caso o `CONST.FXP` é procurado na própria pasta escolhida). Tudo o mais é igual ao build do repositório: ordem de dependência (CONST → PR2 → VC2 antes de SC2 → PJ2), sessão única do VFP9, progresso, pausa e cancelamento.
+
+> **Relatórios `.rpt` neste comando**: um `.rpt` **selecionado diretamente** sempre gera o `.RPA`. Os encontrados ao varrer uma **pasta** respeitam a configuração `enableRpt2Rpa` (desativada por padrão), já que cada relatório pode levar dezenas de minutos; quando algum é ignorado por isso, o Output informa a quantidade.
+
 ### Pausar e retomar
 
-Enquanto a compilação em lote roda (repositório inteiro ou apenas os alterados), a notificação mostra o progresso (`37 / 412 — arquivo.vc2`) e um botão **Cancelar**. Para **pausar**, use o item que aparece na **barra de status**:
+Enquanto a compilação em lote roda (repositório inteiro, apenas os alterados ou um arquivo/diretório), a notificação mostra o progresso (`37 / 412 — arquivo.vc2`) e um botão **Cancelar**. Para **pausar**, use o item que aparece na **barra de status**:
 
 ```
 $(⏸) Pausar VFP 37/412      → clique → $(▶) Retomar VFP 37/412  (destacado em amarelo)
