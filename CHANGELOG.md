@@ -10,6 +10,8 @@
 - **Guarda de auto-include**: depois do build, o VFP grava no `.pjx` dependências que ele mesmo detectou, inchando o EXE. A extensão regenera o `.pj2` (BIN2PRG), compara com a lista de entrada, marca os novos como excludentes e refaz o build até estabilizar (até 3 passadas). As exclusões descobertas são **persistidas no `.pj2`** (auto-cura: o próximo build não repete o drift) e reportadas no Output — aparecem como diff no git para revisão.
 - A versão do EXE é a do bloco `<DevInfo>` do `.pj2` (`_MajorVer`/`_MinorVer`/`_Revision`), como o desenvolvedor definiu — a extensão não versiona automaticamente (isso é da pipeline).
 - Se a chave `_STARTUP` do VFP9 estiver preenchida no registro (TaskPane), o Output avisa: ela pode abrir um modal que trava o build. A extensão **não** altera o registro.
+- No timeout, apenas o `vfp9.exe` iniciado pelo build é encerrado. O fluxo original da pipeline derrubava **todas** as instâncias do VFP9 (`Get-Process -Name vfp9 | Stop-Process`) — inócuo num servidor dedicado, mas na máquina do desenvolvedor isso fecharia o IDE aberto, com trabalho não salvo.
+- Builds de EXE do mesmo projeto não se sobrepõem: um segundo pedido (dois saves seguidos, ou um save durante o build em lote) é recusado com aviso, em vez de colocar duas instâncias do VFP9 sobre o mesmo `.pjx` — o que poderia corromper o `.pj2`.
 - Refactor: `convertBin2Prg` em `src/foxbin2prg.ts` (direção inversa do PRG2BIN, usada pela guarda) e novo módulo `src/pj2exe.ts` com a orquestração.
 - Portado do fluxo já validado em produção no `vfp-compiler-installer` (`VfpExeCompiler.ps1`), que não foi alterado.
 

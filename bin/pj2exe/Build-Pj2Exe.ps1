@@ -154,8 +154,10 @@ try {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
     while (-not $p.HasExited) {
         if ([DateTime]::UtcNow -ge $deadline) {
+            # Mata SO' o vfp9.exe que este script iniciou. Na pipeline, o original varria
+            # "Get-Process -Name vfp9 | Stop-Process", o que num servidor dedicado e' inocuo -
+            # mas na maquina do desenvolvedor derrubaria o IDE dele, com trabalho nao salvo.
             try { $p.Kill() } catch { }
-            @(Get-Process -Name 'vfp9' -ErrorAction SilentlyContinue) | Stop-Process -Force -ErrorAction SilentlyContinue
             Write-Status "Timeout do BUILD EXE RECOMPILE (${TimeoutSec}s) apos $clicks clique(s)."
             exit 1
         }

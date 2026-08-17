@@ -35,12 +35,18 @@ export function execCscript(
     const cscript = resolveCscript();
     const TICK_MS = 1000;
     return new Promise((resolve) => {
+        // Declarado antes do execFile: o callback o referencia e depender da ordem de
+        // avaliação (TDZ) seria frágil se o processo falhasse logo na largada.
+        let watchdog: NodeJS.Timeout | undefined;
+
         const child = execFile(
             cscript,
             ['//nologo', ...args],
             { cwd, windowsHide: true },
             (error, _stdout, stderr) => {
-                clearInterval(watchdog);
+                if (watchdog) {
+                    clearInterval(watchdog);
+                }
                 // execFile só popula error.code para exit != 0; sucesso => code 0.
                 const code = error && typeof (error as unknown as { code?: number }).code === 'number'
                     ? (error as unknown as { code: number }).code
@@ -50,13 +56,15 @@ export function execCscript(
         );
 
         let remaining = timeoutMs;
-        const watchdog = setInterval(() => {
+        watchdog = setInterval(() => {
             if (isPaused && isPaused()) {
                 return; // tempo pausado não conta para o timeout
             }
             remaining -= TICK_MS;
             if (remaining <= 0) {
-                clearInterval(watchdog);
+                if (watchdog) {
+                    clearInterval(watchdog);
+                }
                 child.kill();
             }
         }, TICK_MS);

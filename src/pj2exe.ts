@@ -30,6 +30,14 @@ import { convertPrg2Bin, convertBin2Prg } from './foxbin2prg';
  * automático é responsabilidade da pipeline.
  */
 
+/**
+ * Projetos com build em andamento. Dois builds simultâneos do mesmo `.pj2` (dois saves
+ * seguidos, ou um save durante o build em lote) colocariam duas instâncias do VFP9 sobre
+ * o mesmo `.pjx` — e a restauração de um sobrescreveria a do outro, podendo corromper o
+ * `.pj2` do desenvolvedor.
+ */
+const emAndamento = new Set<string>();
+
 /** Indica se `filePath` é um projeto FoxBin2Prg em texto (`.pj2`). */
 export function isPj2File(filePath: string): boolean {
     return path.extname(filePath).toLowerCase() === '.pj2';
@@ -138,9 +146,14 @@ function metadataType(relPath: string): string {
     }
 }
 
-/** Procura um arquivo pelo nome sob `root` e devolve o caminho relativo (ou `undefined`). */
-function findRelativePath(root: string, base: string): string | undefined {
+/**
+ * Indexa os arquivos sob `root` por nome (minúsculas) → caminho relativo. Uma varredura
+ * só resolve todos os nomes procurados; buscar um a um custaria uma varredura completa
+ * do repositório por arquivo auto-incluído. Em nomes repetidos, vence o primeiro achado.
+ */
+function indexFilesByName(root: string): Map<string, string> {
     const skip = new Set(['node_modules', '.git', 'foxbin2prg', 'rpt2rpa']);
+    const index = new Map<string, string>();
     const stack = [root];
     while (stack.length > 0) {
         const dir = stack.pop()!;
@@ -156,12 +169,15 @@ function findRelativePath(root: string, base: string): string | undefined {
                 if (!skip.has(entry.name.toLowerCase())) {
                     stack.push(full);
                 }
-            } else if (entry.isFile() && entry.name.toLowerCase() === base) {
-                return path.relative(root, full);
+            } else if (entry.isFile()) {
+                const key = entry.name.toLowerCase();
+                if (!index.has(key)) {
+                    index.set(key, path.relative(root, full));
+                }
             }
         }
     }
-    return undefined;
+    return index;
 }
 
 /**
@@ -174,12 +190,14 @@ function findRelativePath(root: string, base: string): string | undefined {
  */
 function persistAutoIncludes(text: string, bases: string[], rootDir: string): { text: string; added: string[] } {
     const existing = new Set(getAddRefs(text).map((r) => r.base));
+    const pendentes = bases.filter((b) => !existing.has(b));
+    if (pendentes.length === 0) {
+        return { text, added: [] };
+    }
+    const index = indexFilesByName(rootDir);
     const relPaths: string[] = [];
-    for (const base of bases) {
-        if (existing.has(base)) {
-            continue;
-        }
-        const rel = findRelativePath(rootDir, base);
+    for (const base of pendentes) {
+        const rel = index.get(base);
         if (rel) {
             relPaths.push(rel.toLowerCase());
         }
@@ -276,6 +294,17 @@ export async function buildExeFromPj2(pj2Path: string, options: Pj2ExeOptions): 
         return { success: false, passes: 0, excluded: [], message: `Projeto não encontrado: ${pj2Path}` };
     }
 
+    const lockKey = path.resolve(pj2Path).toLowerCase();
+    if (emAndamento.has(lockKey)) {
+        return {
+            success: false,
+            passes: 0,
+            excluded: [],
+            message: 'Já há um build de EXE em andamento para este projeto — aguarde o anterior terminar.',
+        };
+    }
+    emAndamento.add(lockKey);
+
     const dir = path.dirname(pj2Path);
     const parsed = path.parse(pj2Path);
     const pjxPath = path.join(dir, parsed.name + '.pjx');
@@ -363,5 +392,6 @@ export async function buildExeFromPj2(pj2Path: string, options: Pj2ExeOptions): 
         } catch (err) {
             options.log(`[ERRO] falha ao restaurar ${pj2Path}: ${(err as Error).message}`);
         }
+        emAndamento.delete(lockKey);
     }
 }

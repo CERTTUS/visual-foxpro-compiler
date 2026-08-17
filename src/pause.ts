@@ -54,6 +54,9 @@ export class PauseController implements vscode.Disposable {
     /** Arquivo-flag observado pelo motor VBS: enquanto existir, o VFP9 aguarda. */
     readonly pauseFile: string;
 
+    /** Controlador que estava ativo (builds podem se sobrepor: save durante um build). */
+    private readonly anterior: PauseController | undefined;
+
     constructor(total: number) {
         this.total = total;
         this.pauseFile = path.join(os.tmpdir(), `vfc_pause_${process.pid}_${Date.now()}.flag`);
@@ -64,6 +67,7 @@ export class PauseController implements vscode.Disposable {
         this.render();
         this.item.show();
 
+        this.anterior = active;
         active = this;
         vscode.commands.executeCommand('setContext', BUILDING_CONTEXT, true);
     }
@@ -148,8 +152,12 @@ export class PauseController implements vscode.Disposable {
         }
         this.item.dispose();
         if (active === this) {
-            active = undefined;
-            vscode.commands.executeCommand('setContext', BUILDING_CONTEXT, false);
+            // Devolve o controle ao build anterior, se houver — do contrário o botão do
+            // build que ainda roda ficaria órfão ("nenhuma compilação em andamento").
+            active = this.anterior;
+            if (!active) {
+                vscode.commands.executeCommand('setContext', BUILDING_CONTEXT, false);
+            }
         }
     }
 
