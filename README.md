@@ -31,6 +31,18 @@ Para quem clonou um repositório contendo **apenas os fontes** (texto) e precisa
 
 A ação varre o(s) workspace folder(s), gera `PRG`+`FXP` de todos os `.pr2`, os `.SQL` de todos os `.sq2` e os binários VFP (`SCX/VCX/FRX…`) de todos os textos FoxBin2Prg, mostrando o progresso e o resultado por arquivo no Output. Binários existentes são sobrescritos (há confirmação, controlável pela configuração `confirmBuildRepository`). O comando **`Visual FoxPro: Compilar arquivos alterados (git)`** (`Ctrl+Shift+Alt+S`) faz o mesmo apenas para os fontes modificados/criados segundo o git — incluindo os `.sq2`.
 
+### Pausar e retomar
+
+Enquanto a compilação em lote roda (repositório inteiro ou apenas os alterados), a notificação mostra o progresso (`37 / 412 — arquivo.vc2`) e um botão **Cancelar**. Para **pausar**, use o item que aparece na **barra de status**:
+
+```
+$(⏸) Pausar VFP 37/412      → clique → $(▶) Retomar VFP 37/412  (destacado em amarelo)
+```
+
+O mesmo comando está na paleta como **`Visual FoxPro: Pausar/Retomar a compilação em andamento`** (visível apenas durante um build). O botão vive na barra de status porque a notificação de progresso do VS Code não aceita botões customizados além do Cancelar nativo.
+
+A pausa acontece **entre arquivos** — o arquivo em processamento sempre termina — e vale inclusive **dentro da sessão única do VFP9** do FoxBin2Prg, que é a etapa mais demorada. **Cancelar tem precedência sobre pausar**: se você cancelar durante uma pausa, a espera é destravada e o build encerra. O tempo pausado não conta para o timeout da sessão do VFP9.
+
 > **CONST.FXP**: antes de compilar os PR2 (tanto no build quanto ao salvar um `.pr2`), a extensão verifica se o `CONST.FXP` existe na raiz do repositório. Se não existir e houver um `CONST.PR2`, ele é compilado primeiro — assim os PR2 que fazem `#INCLUDE CONST.PRG` não falham por constantes ausentes.
 
 > **Ordem das classes/formulários**: no build, as `VC2` (classes) são geradas **antes** das `SC2` (formulários), pois os formulários incorporam as classes. Entre as bibliotecas `VC2`, a ordem segue a configuração `visualFoxproCompiler.vcxBuildOrder` (padrão: `vclFormularios`, `vclComponentesBasicos`, `vclComponentesIntegrados`); as demais `VC2` seguem em ordem alfabética e o `PJ2` (projeto) é processado por último. Tudo numa única sessão do VFP9 por pasta.

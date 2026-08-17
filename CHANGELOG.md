@@ -1,6 +1,13 @@
 # Change Log
 
 
+## [1.4.0]
+
+- Feat: **pausar/retomar** a compilação em lote. Durante os comandos **Compilar todo o repositório** e **Compilar arquivos alterados (git)**, um item aparece na **barra de status** mostrando o contador (`Pausar VFP 37/412`) e alternando entre **Pausar** e **Retomar** (destacado em amarelo quando pausado). O **Cancelar** continua no botão nativo da notificação de progresso. Também disponível na paleta de comandos como `Visual FoxPro: Pausar/Retomar a compilação em andamento` (visível apenas durante um build). A notificação de progresso do VS Code não aceita botões customizados — daí o botão viver na barra de status.
+- A pausa vale **entre arquivos**, nunca no meio de um: o arquivo em processamento sempre termina. Ela atua nos laços da extensão (PR2, SQ2, RPT e entre pastas) e também **dentro da sessão única do VFP9** do FoxBin2Prg — o `Run-Bin2PrgList-VFP9.vbs` passou a receber um arquivo de pausa (4º argumento) e aguarda enquanto ele existir. Sem isso o botão seria inócuo justamente no trecho mais demorado do build.
+- Cancelar tem precedência sobre pausar: o cancelamento destrava a espera (inclusive a do VFP9) e encerra o build.
+- Change: o timeout do `cscript` deixou de ser o da opção `timeout` do `execFile` e passou a ser controlado pela extensão (`execCscript`), **descontando o tempo pausado** — do contrário uma pausa longa mataria a sessão do VFP9 que estava apenas aguardando.
+
 ## [1.3.3]
 
 - Fix: o fluxo **`.rpt` → `.RPA`** travava indefinidamente no modo headless (automação COM). Causa: com o `SET SAFETY` do VFP em ON (padrão), o `SET DEVICE TO FILE C:\CERTTUS\CERTTUS.dsn` do gerador abria um modal **"already exists, overwrite it?"** que ficava **invisível** (o VFP9 roda oculto via COM) e pendurava o `cscript`. Correção: **`SET SAFETY OFF`** no gerador, eliminando o modal de confirmação de sobrescrita (do DSN e do `.RPA`).

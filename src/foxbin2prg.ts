@@ -189,11 +189,16 @@ export function orderFoxBin2PrgFiles(files: string[], vcxPriority: string[]): st
  * `onProgress(processed, currentName)` é chamado periodicamente com a quantidade de
  * arquivos já processados pelo VFP9 e o nome do arquivo atual (acompanha o progresso
  * em tempo real durante a sessão única).
+ *
+ * `pauseFile` (opcional) permite pausar a sessão: enquanto esse arquivo existir, o VBS
+ * aguarda antes de processar o próximo item da lista. É o que dá efeito ao botão
+ * Pausar durante o trecho mais demorado do build.
  */
 export async function convertFilesOrdered(
     orderedFiles: string[],
     extensionPath: string,
-    onProgress?: (processed: number, currentName: string) => void
+    onProgress?: (processed: number, currentName: string) => void,
+    pauseFile?: string
 ): Promise<FoxBin2PrgFolderResult> {
     const { foxPath } = enginePaths(extensionPath);
     const listVbs = path.join(foxPath, 'Run-Bin2PrgList-VFP9.vbs');
@@ -228,8 +233,14 @@ export async function convertFilesOrdered(
     }
 
     try {
-        // Timeout amplo: toda a lista é processada numa só sessão do VFP9.
-        const { code, stderr } = await execCscript(foxPath, [listVbs, listFile, 'PRG2BIN', statusFile], 1800000);
+        // Timeout amplo: toda a lista é processada numa só sessão do VFP9. O tempo
+        // pausado não conta (o VBS fica aguardando o arquivo de pausa desaparecer).
+        const { code, stderr } = await execCscript(
+            foxPath,
+            [listVbs, listFile, 'PRG2BIN', statusFile, pauseFile ?? ''],
+            1800000,
+            pauseFile ? () => fs.existsSync(pauseFile) : undefined
+        );
         if (code !== 0) {
             return {
                 success: false,

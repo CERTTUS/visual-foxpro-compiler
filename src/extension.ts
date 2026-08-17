@@ -12,6 +12,7 @@ import {
     FOXBIN2PRG_TEXT_EXTENSIONS,
 } from './foxbin2prg';
 import { convertRpt2Rpa, isRptFile } from './rpt2rpa';
+import { PauseController, registerPauseCommand } from './pause';
 
 /** Ordem padrão de compilação das bibliotecas de classes (VC2), por nome. */
 const DEFAULT_VCX_ORDER = ['vclFormularios', 'vclComponentesBasicos', 'vclComponentesIntegrados'];
@@ -77,7 +78,9 @@ export function activate(context: vscode.ExtensionContext) {
         () => buildChangedFiles(context, outputChannel)
     );
 
-    context.subscriptions.push(disposable, buildCmd, buildChangedCmd, outputChannel);
+    const togglePauseCmd = registerPauseCommand();
+
+    context.subscriptions.push(disposable, buildCmd, buildChangedCmd, togglePauseCmd, outputChannel);
 }
 
 interface Pr2Result {
@@ -389,6 +392,10 @@ async function buildWorkspace(
  * binários FoxBin2Prg numa única sessão do VFP9 por workspace folder (respeitando a
  * ordem VC2 antes de SC2). Usado por "Compilar todo o repositório" e por "Compilar
  * arquivos alterados (git)".
+ *
+ * Durante a execução, um item na barra de status permite pausar/retomar: a pausa vale
+ * entre os arquivos aqui e também dentro da sessão do VFP9 (via arquivo-flag lido pelo
+ * motor VBS). O cancelamento continua no botão nativo da notificação de progresso.
  */
 async function compileFileSet(
     pr2Paths: string[],
@@ -427,7 +434,11 @@ async function compileFileSet(
     let foxWarn = 0;
     let foxFail = 0;
 
-    await vscode.window.withProgress(
+    // Pausa/retomada pela barra de status (a notificação de progresso não aceita
+    // botões customizados; nela permanece apenas o Cancelar nativo).
+    const pause = new PauseController(total);
+
+    const buildRun = vscode.window.withProgress(
         {
             location: vscode.ProgressLocation.Notification,
             title: progressTitle,
@@ -438,9 +449,39 @@ async function compileFileSet(
             let done = 0;
             const report = (message: string) => progress.report({ message: `${done} / ${total} — ${message}` });
 
+            // Cancelar tem precedência sobre pausar: destrava a espera (inclusive a do VFP9).
+            token.onCancellationRequested(() => pause.resume());
+
+            /** Avança o contador em um arquivo, atualizando notificação e barra de status. */
+            const advance = (name: string) => {
+                done++;
+                progress.report({ increment: step, message: `${done} / ${total} — ${name}` });
+                pause.setProgress(done, total, name);
+            };
+
+            /**
+             * Barreira entre arquivos: aguarda enquanto pausado.
+             * Retorna `false` quando o build foi cancelado (o chamador deve encerrar).
+             */
+            const gate = async (): Promise<boolean> => {
+                if (token.isCancellationRequested) {
+                    return false;
+                }
+                if (pause.paused) {
+                    report('pausado (retome na barra de status)');
+                    outputChannel.appendLine(`[PAUSA] compilação pausada em ${done} / ${total}.`);
+                    await pause.waitWhilePaused(token);
+                    if (token.isCancellationRequested) {
+                        return false;
+                    }
+                    outputChannel.appendLine('[PAUSA] compilação retomada.');
+                }
+                return true;
+            };
+
             // 0) Garante o CONST.FXP na raiz de cada workspace folder (PR2 com #INCLUDE CONST.PRG).
             for (const folder of folders) {
-                if (token.isCancellationRequested) {
+                if (!(await gate())) {
                     return;
                 }
                 await ensureConstCompiled(folder.uri.fsPath, compilerPath, convertEncoding, outputChannel);
@@ -448,11 +489,10 @@ async function compileFileSet(
 
             // 1) PR2 -> PRG + FXP (arquivo a arquivo)
             for (const pr2Path of pr2Paths) {
-                if (token.isCancellationRequested) {
+                if (!(await gate())) {
                     return;
                 }
-                done++;
-                progress.report({ increment: step, message: `${done} / ${total} — ${path.basename(pr2Path)}` });
+                advance(path.basename(pr2Path));
                 const result = await compilePr2File(pr2Path, compilerPath, convertEncoding);
                 if (result.success) {
                     pr2Ok++;
@@ -466,11 +506,10 @@ async function compileFileSet(
 
             // 1b) SQ2 -> SQL (Windows-1252), apenas conversão de encoding (sem compilação).
             for (const sq2Path of sq2Paths) {
-                if (token.isCancellationRequested) {
+                if (!(await gate())) {
                     return;
                 }
-                done++;
-                progress.report({ increment: step, message: `${done} / ${total} — ${path.basename(sq2Path)}` });
+                advance(path.basename(sq2Path));
                 const result = convertSq2File(sq2Path, convertEncoding);
                 if (result.success) {
                     sqlOk++;
@@ -483,11 +522,10 @@ async function compileFileSet(
 
             // 1c) RPT -> RPA (texto), via GeradorDiferencasRelatorio embarcado (VFP9 + Crystal 11).
             for (const rptPath of rpts) {
-                if (token.isCancellationRequested) {
+                if (!(await gate())) {
                     return;
                 }
-                done++;
-                progress.report({ increment: step, message: `${done} / ${total} — ${path.basename(rptPath)}` });
+                advance(path.basename(rptPath));
                 let result;
                 try {
                     result = await convertRpt2Rpa(rptPath, context.extensionPath);
@@ -507,7 +545,7 @@ async function compileFileSet(
             //    em uma única sessão do VFP9 por workspace folder.
             if (texts.length > 0) {
                 for (const folder of folders) {
-                    if (token.isCancellationRequested) {
+                    if (!(await gate())) {
                         return;
                     }
                     const folderPath = folder.uri.fsPath;
@@ -529,6 +567,7 @@ async function compileFileSet(
                                 increment: step * delta,
                                 message: `${done} / ${total} — ${currentName || 'FoxBin2Prg'}`,
                             });
+                            pause.setProgress(done, total, currentName);
                         }
                     };
 
@@ -538,7 +577,12 @@ async function compileFileSet(
                     const startTime = Date.now();
                     let res;
                     try {
-                        res = await convertFilesOrdered(orderedFiles, context.extensionPath, onProgress);
+                        res = await convertFilesOrdered(
+                            orderedFiles,
+                            context.extensionPath,
+                            onProgress,
+                            pause.pauseFile
+                        );
                     } catch (err) {
                         res = { success: false, count: orderedFiles.length, message: (err as Error).message };
                     }
@@ -548,6 +592,7 @@ async function compileFileSet(
                     if (finalDone > done) {
                         progress.report({ increment: step * (finalDone - done) });
                         done = finalDone;
+                        pause.setProgress(done, total);
                     }
 
                     if (!res.success) {
@@ -573,6 +618,13 @@ async function compileFileSet(
             }
         }
     );
+
+    try {
+        await buildRun;
+    } finally {
+        // Sempre remove o item da barra de status e o arquivo de pausa, mesmo em falha.
+        pause.dispose();
+    }
 
     const summary = `Compilação concluída: PR2 ${pr2Ok} ok / ${pr2Fail} erro(s); SQ2 ${sqlOk} ok / ${sqlFail} erro(s); RPT ${rpaOk} ok / ${rpaFail} erro(s); FoxBin2Prg ${foxOk} ok / ${foxWarn} aviso(s) / ${foxFail} erro(s).`;
     outputChannel.appendLine(summary);
