@@ -1,6 +1,12 @@
 # Change Log
 
 
+## [1.6.4]
+
+- Fix: **removidas as notificações de controle** introduzidas na 1.6.2. Como notificações não podem ser fechadas por código, cada build (e cada retomada) deixava mais uma para trás, com contador congelado — três empilhadas na tela em vez de uma. O Pausar/Retomar volta a viver **apenas no item da barra de status** e na paleta de comandos.
+- Não é possível renomear o botão **Cancelar** da notificação de progresso: a API `withProgress` do VS Code não expõe o rótulo nem aceita botões adicionais. Uma tela única com Pausar/Retomar/Cancelar exigiria um painel webview próprio.
+- Fix: o título da retomada não acumula mais sufixos — retomar uma retomada deixava `Compilando repositório — retomando — retomando — retomando`.
+
 ## [1.6.3]
 
 - Feat: **cancelar deixou de ser definitivo**. Ao cancelar uma compilação em lote, a extensão informa quantos arquivos ficaram de fora e oferece **Retomar de onde parou** — a retomada reexecuta o mesmo núcleo apenas com o que faltava, em vez de recomeçar o build inteiro. O que já foi compilado permanece.

@@ -513,8 +513,8 @@ async function compileFileSet(
     };
     let cancelado = false;
 
-    // Pausa/retomada pela barra de status (a notificação de progresso não aceita
-    // botões customizados; nela permanece apenas o Cancelar nativo).
+    // Pausa/retomada pela barra de status: a notificação de progresso não aceita botões
+    // customizados e não permite renomear o Cancelar nativo, que continua sendo o dela.
     const pause = new PauseController(total);
 
     const buildRun = vscode.window.withProgress(
@@ -803,7 +803,9 @@ function offerResume(
                 context,
                 outputChannel,
                 config,
-                `${progressTitle} — retomando`,
+                // Sem acumular sufixos: retomar uma retomada não vira
+                // "... — retomando — retomando".
+                `${progressTitle.replace(/ — retomando$/, '')} — retomando`,
                 `=== Retomar compilação (${restantes} arquivo(s) restantes) ===`
             );
         });

@@ -59,14 +59,13 @@ A varredura ignora `node_modules`, `.git`, `foxbin2prg` e `rpt2rpa`, e vale incl
 Enquanto a compilação em lote roda (repositório inteiro, apenas os alterados ou um arquivo/diretório), o Pausar/Retomar fica disponível em dois lugares:
 
 ```
-Notificação de progresso        Compilando repositório...  37 / 412 — arquivo.vc2   [X]
-Notificação de controle         Compilando 37/412 — arquivo.vc2          [ Pausar ]
-Barra de status                 $(⏸) Pausar VFP 37/412
+Notificação de progresso    Compilando repositório...  37 / 412 — arquivo.vc2   [Cancelar]
+Barra de status             $(⏸) Pausar VFP 37/412   →  clique  →  $(▶) Retomar VFP 37/412
 ```
 
-Clicar em **Pausar** (na notificação ou na barra de status) alterna para **Retomar**; a notificação reabre já com o rótulo novo. O **Cancelar** continua sendo o `X` da notificação de progresso.
+Clicar no item da barra de status alterna entre **Pausar** e **Retomar** (destacado em amarelo quando pausado). O **Cancelar** é o botão da notificação de progresso.
 
-O mesmo comando está na paleta como **`Visual FoxPro: Pausar/Retomar a compilação em andamento`** (visível apenas durante um build). A notificação de controle é separada da de progresso porque esta última, pela API do VS Code, não aceita botões além do Cancelar nativo. Se você dispensar a notificação de controle, ela não volta — o item da barra de status continua valendo.
+O mesmo comando está na paleta como **`Visual FoxPro: Pausar/Retomar a compilação em andamento`** (visível apenas durante um build). O botão fica na barra de status porque a API de progresso do VS Code não aceita botões customizados nem permite renomear o Cancelar nativo.
 
 ### Cancelar e retomar
 

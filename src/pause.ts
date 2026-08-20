@@ -7,13 +7,11 @@ import * as vscode from 'vscode';
  * Pausa/retomada das compilações em lote ("Compilar todo o repositório" e
  * "Compilar arquivos alterados (git)").
  *
- * A notificação de progresso do VS Code não aceita botões customizados — só o
- * "Cancelar" nativo. O Pausar/Retomar aparece então em dois lugares, ambos ativos
- * enquanto a compilação roda:
- *  - uma **notificação de controle** ao lado da barra de progresso, com o botão
- *    Pausar/Retomar (reaberta a cada clique, já com o estado novo);
- *  - um **item na barra de status**, que também mostra o contador e sobrevive caso a
- *    notificação seja dispensada.
+ * A notificação de progresso do VS Code não aceita botões customizados nem permite
+ * renomear o "Cancelar" nativo, e notificações avulsas não podem ser fechadas por
+ * código — uma tentativa de pôr o botão ali (1.6.2) deixava notificações órfãs
+ * acumulando a cada build. Por isso o Pausar/Retomar vive num item da barra de status,
+ * visível apenas enquanto a compilação está em andamento.
  *
  * A pausa atua em dois níveis:
  *  - no lado da extensão (loops PR2/SQ2/RPT e entre pastas), via `waitWhilePaused`;
@@ -54,8 +52,6 @@ export class PauseController implements vscode.Disposable {
     private readonly item: vscode.StatusBarItem;
     private done = 0;
     private total = 0;
-    /** Arquivo sendo processado, exibido na notificação de controle. */
-    private currentName = '';
 
     /** Arquivo-flag observado pelo motor VBS: enquanto existir, o VFP9 aguarda. */
     readonly pauseFile: string;
@@ -76,8 +72,6 @@ export class PauseController implements vscode.Disposable {
         this.anterior = active;
         active = this;
         vscode.commands.executeCommand('setContext', BUILDING_CONTEXT, true);
-
-        void this.loopNotificacao();
     }
 
     get paused(): boolean {
@@ -85,12 +79,9 @@ export class PauseController implements vscode.Disposable {
     }
 
     /** Atualiza o contador exibido na barra de status. */
-    setProgress(done: number, total: number, currentName?: string): void {
+    setProgress(done: number, total: number, _currentName?: string): void {
         this.done = done;
         this.total = total;
-        if (currentName) {
-            this.currentName = currentName;
-        }
         this.render();
     }
 
@@ -105,7 +96,7 @@ export class PauseController implements vscode.Disposable {
             /* sem o arquivo-flag a pausa vale só do lado da extensão */
         }
         this.render();
-        vscode.window.setStatusBarMessage('Compilação pausada — retome pelo botão Retomar.', 5000);
+        vscode.window.setStatusBarMessage('Compilação pausada — retome na barra de status.', 5000);
     }
 
     resume(): void {
@@ -169,41 +160,6 @@ export class PauseController implements vscode.Disposable {
             if (!active) {
                 vscode.commands.executeCommand('setContext', BUILDING_CONTEXT, false);
             }
-        }
-    }
-
-    /**
-     * Notificação de controle, ao lado da barra de progresso: traz o botão
-     * **Pausar** / **Retomar** junto do Cancelar nativo. A API de progresso do VS Code não
-     * aceita botões customizados, então o botão vive numa notificação própria, reaberta a
-     * cada clique já com o estado novo (o clique fecha a notificação anterior).
-     *
-     * Se o usuário dispensar a notificação, ela não volta — o item da barra de status
-     * continua servindo. Notificações também não podem ser fechadas por código: se o build
-     * terminar antes de qualquer clique, ela permanece até ser dispensada, e um clique
-     * tardio apenas informa que a compilação já acabou.
-     */
-    private async loopNotificacao(): Promise<void> {
-        while (!this._disposed) {
-            const botao = this._paused ? 'Retomar' : 'Pausar';
-            const contador = this.total > 0 ? ` ${this.done}/${this.total}` : '';
-            const atual = this.currentName ? ` — ${this.currentName}` : '';
-            const texto = this._paused
-                ? `Compilação PAUSADA${contador}${atual}`
-                : `Compilando${contador}${atual}`;
-
-            const escolha = await vscode.window.showInformationMessage(texto, botao);
-
-            if (this._disposed) {
-                if (escolha === botao) {
-                    vscode.window.setStatusBarMessage('A compilação já foi concluída.', 3000);
-                }
-                return;
-            }
-            if (escolha !== botao) {
-                return; // dispensada pelo usuário: não reabre
-            }
-            this.toggle();
         }
     }
 
