@@ -72,6 +72,22 @@ function resolveIncludeSource(
     return undefined;
 }
 
+/**
+ * O include já está atendido? Diretivas **sem extensão** — `#INCLUDE "..\\cselecionados"`,
+ * que existem nos fontes — são satisfeitas por `.h` ou `.prg` ao lado: o VFP assume `.h`
+ * quando a extensão é omitida. Sem esta checagem, um include desses seria reportado como
+ * não resolvido a cada compilação, mesmo com o arquivo presente.
+ */
+function jaSatisfeito(alvo: string): boolean {
+    if (fs.existsSync(alvo)) {
+        return true;
+    }
+    if (path.extname(alvo)) {
+        return false;
+    }
+    return fs.existsSync(`${alvo}.h`) || fs.existsSync(`${alvo}.prg`);
+}
+
 export interface IncludeResult {
     /** `.PRG` criados por esta chamada. */
     criados: string[];
@@ -104,7 +120,7 @@ export function materializeIncludes(
     const baseDir = path.dirname(sourcePath);
     for (const nome of getIncludeDependencies(texto)) {
         const alvo = getIncludeTargetPath(nome, baseDir);
-        if (fs.existsSync(alvo)) {
+        if (jaSatisfeito(alvo)) {
             continue; // já existe (versionado ou gerado antes): mantém
         }
         const origem = resolveIncludeSource(nome, baseDir, rootDir);
@@ -119,11 +135,13 @@ export function materializeIncludes(
                 naoResolvidos.push(nome);
                 continue;
             }
+            // Diretiva sem extensão: grava como `.prg`, e não um arquivo sem extensão.
+            const destino = path.extname(alvo) ? alvo : `${alvo}.prg`;
             // writePrgFromPr2 grava ao lado do .PR2; copia para o caminho da diretiva.
-            if (path.resolve(r.prgPath).toLowerCase() !== path.resolve(alvo).toLowerCase()) {
-                fs.copyFileSync(r.prgPath, alvo);
+            if (path.resolve(r.prgPath).toLowerCase() !== path.resolve(destino).toLowerCase()) {
+                fs.copyFileSync(r.prgPath, destino);
             }
-            criados.push(alvo);
+            criados.push(destino);
         } catch {
             naoResolvidos.push(nome);
         }

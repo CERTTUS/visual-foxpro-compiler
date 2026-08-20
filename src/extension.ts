@@ -1060,7 +1060,21 @@ async function buildChangedFiles(
     const sq2Paths = changed.filter((p) => p.toLowerCase().endsWith('.sq2'));
     const rptPaths = changed.filter((p) => isRptFile(p));
     const textPaths = changed.filter((p) => isFoxBin2PrgText(p));
-    const netProjects = projectsForSources(changed.filter(isDotNetSource), folders[0].uri.fsPath);
+    // A raiz é resolvida por arquivo: com múltiplos workspace folders, usar sempre o
+    // primeiro faria a busca pelo `.vbproj` subir a árvore errada e não achar o projeto.
+    const netProjects = [
+        ...new Set(
+            changed
+                .filter(isDotNetSource)
+                .flatMap((p) =>
+                    projectsForSources(
+                        [p],
+                        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(p))?.uri.fsPath ??
+                            path.dirname(p)
+                    )
+                )
+        ),
+    ];
 
     if (pr2Paths.length + sq2Paths.length + rptPaths.length + textPaths.length + netProjects.length === 0) {
         vscode.window.showInformationMessage('Nenhum fonte FoxPro alterado (.pr2/.sq2/.rpt/.sc2/.vc2/...) segundo o git.');

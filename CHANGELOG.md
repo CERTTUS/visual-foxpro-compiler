@@ -1,6 +1,13 @@
 # Change Log
 
 
+## [1.7.1]
+
+- Fix: no comando **Compilar arquivos alterados (git)**, o `.vbproj` de um arquivo .NET era procurado sempre a partir do primeiro workspace folder. Em workspace com múltiplas pastas, um `.vb` alterado na segunda pasta não tinha seu projeto encontrado — a busca subia a árvore errada. A raiz passa a ser resolvida por arquivo.
+- Fix: `#INCLUDE` **sem extensão** (`#INCLUDE "....cselecionados"`, presente nos fontes) era sempre reportado como não resolvido. Agora um `.h` ou `.prg` ao lado satisfaz a diretiva — é o que o VFP procura quando a extensão é omitida — e, quando é preciso materializar, o arquivo nasce como `.prg` em vez de sem extensão.
+- Testes: cobertura da detecção de `#INCLUDE` com os formatos reais dos fontes (indentado, espaço após o `#`, entre aspas, entre `< >`, sem extensão, e as ocorrências que **não** são diretiva) e da materialização no caminho exato da diretiva.
+- Fix: o teste `writeSqlFromSq2` verificava o byte `0xE1` (á minúsculo) num conteúdo que só tem `Á` maiúsculo (`0xC1`) — falhava desde que foi escrito, na v1.2.0. A suíte agora passa inteira (7 casos).
+
 ## [1.7.0]
 
 Auditoria de paridade com o `vfp-compiler-installer` (que não foi alterado). Cada item abaixo espelha uma rotina de lá.
