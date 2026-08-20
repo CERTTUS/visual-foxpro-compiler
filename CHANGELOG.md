@@ -1,6 +1,12 @@
 # Change Log
 
 
+## [1.6.2]
+
+- Feat: o **Pausar/Retomar** passa a aparecer também como **botão na notificação**, ao lado da que mostra o arquivo sendo compilado — antes só existia o Cancelar ali, e o botão vivia apenas na barra de status. Clicar alterna o estado e a notificação reabre já com o rótulo oposto (`Pausar` ⇄ `Retomar`), mostrando o contador e o arquivo atual.
+- O item da barra de status continua existindo: ele mostra o contador ao vivo e serve de reserva caso a notificação seja dispensada.
+- Limitações da API do VS Code, herdadas: a notificação de progresso não aceita botões customizados (daí a notificação separada); e uma notificação não pode ser fechada por código — se o build terminar antes de qualquer clique, ela fica visível até ser dispensada, e um clique tardio apenas informa que a compilação já acabou.
+
 ## [1.6.1]
 
 - Fix: no comando **Compilar arquivo ou diretório**, o caminho **digitado ou colado** na própria caixa de seleção passa a valer. Antes, o texto digitado só filtrava a lista: se não casasse com nenhuma opção, o Enter não fazia nada. Agora aparece um item no topo (`Compilar arquivo:` / `Compilar pasta:`) e o Enter compila direto, sem passar pelo diálogo do sistema. As três opções da lista continuam funcionando como antes.

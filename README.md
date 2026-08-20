@@ -56,13 +56,17 @@ A varredura ignora `node_modules`, `.git`, `foxbin2prg` e `rpt2rpa`, e vale incl
 
 ### Pausar e retomar
 
-Enquanto a compilação em lote roda (repositório inteiro, apenas os alterados ou um arquivo/diretório), a notificação mostra o progresso (`37 / 412 — arquivo.vc2`) e um botão **Cancelar**. Para **pausar**, use o item que aparece na **barra de status**:
+Enquanto a compilação em lote roda (repositório inteiro, apenas os alterados ou um arquivo/diretório), o Pausar/Retomar fica disponível em dois lugares:
 
 ```
-$(⏸) Pausar VFP 37/412      → clique → $(▶) Retomar VFP 37/412  (destacado em amarelo)
+Notificação de progresso        Compilando repositório...  37 / 412 — arquivo.vc2   [X]
+Notificação de controle         Compilando 37/412 — arquivo.vc2          [ Pausar ]
+Barra de status                 $(⏸) Pausar VFP 37/412
 ```
 
-O mesmo comando está na paleta como **`Visual FoxPro: Pausar/Retomar a compilação em andamento`** (visível apenas durante um build). O botão vive na barra de status porque a notificação de progresso do VS Code não aceita botões customizados além do Cancelar nativo.
+Clicar em **Pausar** (na notificação ou na barra de status) alterna para **Retomar**; a notificação reabre já com o rótulo novo. O **Cancelar** continua sendo o `X` da notificação de progresso.
+
+O mesmo comando está na paleta como **`Visual FoxPro: Pausar/Retomar a compilação em andamento`** (visível apenas durante um build). A notificação de controle é separada da de progresso porque esta última, pela API do VS Code, não aceita botões além do Cancelar nativo. Se você dispensar a notificação de controle, ela não volta — o item da barra de status continua valendo.
 
 A pausa acontece **entre arquivos** — o arquivo em processamento sempre termina — e vale inclusive **dentro da sessão única do VFP9** do FoxBin2Prg, que é a etapa mais demorada. **Cancelar tem precedência sobre pausar**: se você cancelar durante uma pausa, a espera é destravada e o build encerra. O tempo pausado não conta para o timeout da sessão do VFP9.
 
