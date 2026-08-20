@@ -3,40 +3,67 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as iconv from 'iconv-lite';
-import { isUtf8 } from './encoding';
-import { convertPrg2Bin, convertBin2Prg } from './foxbin2prg';
+import { isUtf8, writePrgFromPr2 } from './encoding';
+import { convertPrg2Bin, convertFilesOrdered } from './foxbin2prg';
+import { materializeIncludes } from './includes';
 
 /**
  * Build do executável de um projeto VFP9 a partir do `.pj2`:
  *
  *   .pj2  --PRG2BIN-->  .pjx/.pjt  --BUILD EXE RECOMPILE-->  .EXE
  *
- * Portado do fluxo validado em `vfp-compiler-installer` (VfpExeCompiler.ps1). Três
- * detalhes vêm de lá e são obrigatórios:
+ * Segue o `Invoke-VfpExeFullBuild` do `vfp-compiler-installer` — o modo que gera um EXE
+ * **que roda**, buildando no working tree completo. O outro modo de lá
+ * (`Invoke-VfpExeSparseLote`, com workspace sparse e guarda de auto-include) serve apenas
+ * para validar que o projeto compila: o EXE que ele produz não funciona, porque a guarda
+ * exclui auto-includes que são dependências necessárias. Por isso aqui **não** há guarda
+ * de auto-include, e o `.pj2` do desenvolvedor nunca recebe exclusões.
  *
- *  1. **HomeDir**: o `.pj2` versionado carrega o `HomeDir` da máquina de quem o commitou.
- *     O PRG2BIN grava esse caminho no `.pjx` e o `BUILD EXE ... RECOMPILE` não encontra os
- *     fontes. Ajustamos o HomeDir para a pasta local antes de gerar o `.pjx` e restauramos
- *     o valor original no fim — o arquivo versionado não fica sujo com um caminho de máquina.
- *  2. **RECOMPILE + auto-clique**: feito pelo motor `bin/pj2exe/Build-Pj2Exe.ps1`.
- *  3. **Guarda de auto-include**: depois do build, o VFP grava no `.pjx` dependências que
- *     detectou sozinho, inchando o EXE. Regeneramos o `.pj2` (BIN2PRG), comparamos com a
- *     lista de entrada, marcamos os novos como excludentes e rebuildamos até estabilizar.
- *     O que for descoberto é persistido no `.pj2` original (auto-cura: o próximo build já
- *     não sofre o drift), aparecendo como diff no git para o desenvolvedor revisar.
+ * Os quatro passos que a referência exige antes do build:
  *
- * A versão do EXE não é calculada aqui: vale o que estiver no bloco `<DevInfo>` do `.pj2`
- * (`_MajorVer`/`_MinorVer`/`_Revision`), como o desenvolvedor definiu. O versionamento
- * automático é responsabilidade da pipeline.
+ *  1. **`.ADD` stale**: referências cujo arquivo não existe (nem o binário, nem o texto
+ *     FoxBin de origem) são removidas. Uma única ref quebrada gera um EXE defeituoso —
+ *     menus que não instanciam — ou centenas de diálogos *Locate File* até o timeout.
+ *  2. **Fecho de dependências**: o repositório versiona os textos, não os binários. Antes
+ *     do build, os binários das dependências do projeto são regenerados a partir dos
+ *     textos (com cache por data de modificação).
+ *  3. **HomeDir**: o `.pj2` versionado traz o caminho da máquina de quem o commitou, e o
+ *     PRG2BIN grava esse caminho no `.pjx`. Sem apontar para a pasta local, o RECOMPILE
+ *     não encontra os fontes.
+ *  4. **RECOMPILE + auto-clique**: no motor `bin/pj2exe/Build-Pj2Exe.ps1`.
+ *
+ * As alterações no `.pj2` (HomeDir e refs removidas) valem só durante o build: o arquivo
+ * original é restaurado ao final.
  */
 
-/**
- * Projetos com build em andamento. Dois builds simultâneos do mesmo `.pj2` (dois saves
- * seguidos, ou um save durante o build em lote) colocariam duas instâncias do VFP9 sobre
- * o mesmo `.pjx` — e a restauração de um sobrescreveria a do outro, podendo corromper o
- * `.pj2` do desenvolvedor.
- */
+/** Projetos com build em andamento (evita dois VFP9 sobre o mesmo `.pjx`). */
 const emAndamento = new Set<string>();
+
+/** Texto FoxBin2Prg de origem para cada binário de código. */
+const BIN_TO_TEXT: Record<string, string> = {
+    '.prg': '.pr2',
+    '.scx': '.sc2',
+    '.vcx': '.vc2',
+    '.frx': '.fr2',
+    '.mnx': '.mn2',
+    '.lbx': '.lb2',
+    '.dbc': '.dc2',
+};
+
+/**
+ * Ordem de regeneração dos binários, igual à da referência: classes antes dos
+ * formulários (que herdam delas), depois relatórios/labels/menus/bancos, e os `.prg`
+ * (conversão de encoding) por último.
+ */
+const BIN_ORDER: Record<string, number> = {
+    '.vcx': 1,
+    '.scx': 2,
+    '.frx': 3,
+    '.lbx': 4,
+    '.mnx': 5,
+    '.dbc': 6,
+    '.prg': 9,
+};
 
 /** Indica se `filePath` é um projeto FoxBin2Prg em texto (`.pj2`). */
 export function isPj2File(filePath: string): boolean {
@@ -54,20 +81,20 @@ export interface Pj2ExeOptions {
     /** `vfp9.exe`; vazio deixa o motor procurar nos caminhos padrão de instalação. */
     vfp9Path?: string;
     timeoutMs: number;
-    /** Passadas máximas da guarda de auto-include (1 = build simples, sem guarda). */
-    maxPasses: number;
-    /** Raiz usada para resolver o caminho relativo dos arquivos auto-incluídos. */
+    /** Raiz do repositório: base do fecho de dependências e da checagem de refs. */
     rootDir: string;
+    /** Converter UTF-8 → Windows-1252 ao gerar os `.prg` das dependências. */
+    convertEncoding: boolean;
     log: (message: string) => void;
 }
 
 export interface Pj2ExeResult {
     success: boolean;
     exePath?: string;
-    /** Quantos builds foram necessários (1 = estabilizou de primeira). */
-    passes: number;
-    /** Arquivos auto-incluídos pelo VFP e marcados como excludentes. */
-    excluded: string[];
+    /** Referências `.ADD` ignoradas por apontarem para arquivos inexistentes. */
+    refsRemovidas: string[];
+    /** Quantos binários de dependência foram regenerados antes do build. */
+    binariosRegenerados: number;
     message?: string;
 }
 
@@ -87,16 +114,16 @@ function writeText(filePath: string, text: string, utf8: boolean): void {
     fs.writeFileSync(filePath, utf8 ? Buffer.from(text, 'utf8') : iconv.encode(text, 'win1252'));
 }
 
-/** Aponta a linha `.HomeDir` do `.pj2` para o diretório local (sem tocar na lista de arquivos). */
+/** Aponta a linha `.HomeDir` do `.pj2` para o diretório local. */
 function setHomeDir(text: string, homeDir: string): string {
-    const hd = homeDir.replace(/\\+$/, '');
+    const hd = homeDir.replace(/[\\]+$/, '');
     return text.replace(/^([ \t]*\*<\.HomeDir\s*=\s*)'[^']*'(\s*\/>)/im, `$1'${hd}'$2`);
 }
 
 interface AddRef {
     /** Caminho como aparece no `.ADD('...')`. */
     ref: string;
-    /** Nome do arquivo em minúsculas (chave de comparação entre passadas). */
+    /** Nome do arquivo em minúsculas. */
     base: string;
 }
 
@@ -112,49 +139,54 @@ function getAddRefs(text: string): AddRef[] {
 }
 
 /**
- * Marca referências como excludentes no bloco `*<ExcludedFiles>`, casando pelo MESMO
- * caminho usado no `.ADD` (é assim que o FoxBin2Prg resolve o membro). Cria o bloco
- * quando ele não existe.
+ * Remove as linhas `.ADD` cujo arquivo não existe sob `rootDir`. Um `.ADD` de código não
+ * é considerado stale quando o **texto FoxBin de origem** existe — em repositório recém
+ * clonado só há os textos, e o binário é gerado logo em seguida.
+ *
+ * Genérico, por inexistência: nenhum nome de arquivo é fixado no código.
  */
-function addExcludedRefs(text: string, refs: string[]): string {
-    if (refs.length === 0) {
-        return text;
+function repairBrokenAdds(text: string, rootDir: string): { text: string; removidas: string[] } {
+    const removidas: string[] = [];
+    const linhas = text.split(/\r?\n/);
+    const mantidas: string[] = [];
+
+    for (const linha of linhas) {
+        const m = /^[ \t]*\.ADD\('([^']+)'\)/i.exec(linha);
+        if (m) {
+            const rel = m[1].replace(/\//g, path.sep);
+            const full = path.resolve(rootDir, rel);
+            let existe = fs.existsSync(full);
+            if (!existe) {
+                const textExt = BIN_TO_TEXT[path.extname(full).toLowerCase()];
+                if (textExt) {
+                    const parsed = path.parse(full);
+                    existe = fs.existsSync(path.join(parsed.dir, parsed.name + textExt));
+                }
+            }
+            if (!existe) {
+                removidas.push(m[1]);
+                continue;
+            }
+        }
+        mantidas.push(linha);
     }
-    const linhas = refs.map((r) => `\t.ITEM(lcCurdir + '${r}').Exclude = .T.`).join('\r\n');
-    if (/^[ \t]*\*<\/ExcludedFiles>/m.test(text)) {
-        return text.replace(/^([ \t]*)\*<\/ExcludedFiles>/m, `${linhas}\r\n$1*</ExcludedFiles>`);
-    }
-    // Sem bloco: cria antes do primeiro ENDWITH que fecha `loProject.FILES`.
-    const rx = /(\.ADD\([^\r\n]*\r?\n)([ \t]*ENDWITH)/;
-    if (!rx.test(text)) {
-        return text;
-    }
-    const bloco = `\t*<ExcludedFiles>\r\n${linhas}\r\n\t*</ExcludedFiles>\r\n`;
-    return text.replace(rx, `$1${bloco}$2`);
+
+    return { text: removidas.length > 0 ? mantidas.join('\r\n') : text, removidas };
 }
 
-/** Letra de tipo do FileMetadata conforme a extensão (formato do FoxBin2Prg). */
-function metadataType(relPath: string): string {
-    switch (path.extname(relPath).toLowerCase()) {
-        case '.scx': return 'K';
-        case '.vcx': return 'V';
-        case '.frx': return 'R';
-        case '.lbx': return 'L';
-        case '.mnx': return 'M';
-        case '.dbc': return 'd';
-        default: return 'P';
-    }
+/** Um texto FoxBin encontrado na varredura do repositório. */
+interface TextEntry {
+    textPath: string;
+    binExt: string;
 }
 
-/**
- * Indexa os arquivos sob `root` por nome (minúsculas) → caminho relativo. Uma varredura
- * só resolve todos os nomes procurados; buscar um a um custaria uma varredura completa
- * do repositório por arquivo auto-incluído. Em nomes repetidos, vence o primeiro achado.
- */
-function indexFilesByName(root: string): Map<string, string> {
+/** Indexa os textos FoxBin do repositório por nome-base (minúsculas). */
+function indexTextsByBase(rootDir: string): Map<string, TextEntry[]> {
+    const textToBin = new Map(Object.entries(BIN_TO_TEXT).map(([bin, txt]) => [txt, bin]));
     const skip = new Set(['node_modules', '.git', 'foxbin2prg', 'rpt2rpa']);
-    const index = new Map<string, string>();
-    const stack = [root];
+    const index = new Map<string, TextEntry[]>();
+    const stack = [rootDir];
+
     while (stack.length > 0) {
         const dir = stack.pop()!;
         let entries: fs.Dirent[];
@@ -169,60 +201,143 @@ function indexFilesByName(root: string): Map<string, string> {
                 if (!skip.has(entry.name.toLowerCase())) {
                     stack.push(full);
                 }
-            } else if (entry.isFile()) {
-                const key = entry.name.toLowerCase();
-                if (!index.has(key)) {
-                    index.set(key, path.relative(root, full));
-                }
+                continue;
             }
+            const binExt = textToBin.get(path.extname(entry.name).toLowerCase());
+            if (!binExt) {
+                continue;
+            }
+            const base = path.parse(entry.name).name.toLowerCase();
+            const lista = index.get(base) ?? [];
+            lista.push({ textPath: full, binExt });
+            index.set(base, lista);
         }
     }
     return index;
 }
 
+/** Padrões de dependência dentro dos textos FoxBin/VFP (portados da referência). */
+const DEP_PATTERNS: RegExp[] = [
+    /["']([\w .\\/-]+?\.(?:vcx|scx|prg|frx|mnx|lbx|vct|sct|dbc))["']/gi,
+    /\bDO\s+FORM\s+([\w\\.]+)/gi,
+    /\bSET\s+(?:CLASSLIB|PROCEDURE)\s+TO\s+([\w\\.]+)/gi,
+    /\bDO\s+(?!FORM\b|WHILE\b|CASE\b|EVENTS\b|APPLICATION\b)([\w\\.]+)/gi,
+];
+
 /**
- * Persiste no `.pj2` original os arquivos que o VFP auto-incluiu: adiciona o `.ADD(...)`
- * no topo do bloco `WITH loProject.FILES` e marca como excludente. Assim o próximo build
- * já encontra o arquivo no projeto (excluído) e não sofre o drift de novo.
+ * Fecho de dependências de código do projeto, por busca em largura: parte dos `.ADD` e
+ * segue as referências de arquivo encontradas em cada texto (classe-pai, `SET CLASSLIB`,
+ * `DO FORM`, `DO`, nomes citados entre aspas).
  *
- * O caminho vai em minúsculas porque o FoxBin2Prg resolve o `Exclude` com `Lower()` —
- * PascalCase quebra o match (Error 2061). O Windows resolve o arquivo do mesmo jeito.
+ * O índice de textos existentes filtra o ruído — palavras que não correspondem a nenhum
+ * arquivo somem sozinhas. O viés é incluir demais: sobrar é barato, faltar quebra o EXE.
  */
-function persistAutoIncludes(text: string, bases: string[], rootDir: string): { text: string; added: string[] } {
-    const existing = new Set(getAddRefs(text).map((r) => r.base));
-    const pendentes = bases.filter((b) => !existing.has(b));
-    if (pendentes.length === 0) {
-        return { text, added: [] };
-    }
-    const index = indexFilesByName(rootDir);
-    const relPaths: string[] = [];
-    for (const base of pendentes) {
-        const rel = index.get(base);
-        if (rel) {
-            relPaths.push(rel.toLowerCase());
+function dependencyClosure(pj2Text: string, index: Map<string, TextEntry[]>): TextEntry[] {
+    const visitados = new Set<string>();
+    const fila: string[] = [];
+
+    for (const ref of getAddRefs(pj2Text)) {
+        const base = path.parse(ref.base).name.toLowerCase();
+        if (index.has(base) && !visitados.has(base)) {
+            visitados.add(base);
+            fila.push(base);
         }
     }
-    if (relPaths.length === 0) {
-        return { text, added: [] };
+
+    while (fila.length > 0) {
+        const base = fila.shift()!;
+        for (const entry of index.get(base) ?? []) {
+            let texto = '';
+            try {
+                texto = fs.readFileSync(entry.textPath, 'latin1');
+            } catch {
+                continue;
+            }
+            for (const rx of DEP_PATTERNS) {
+                rx.lastIndex = 0;
+                let m: RegExpExecArray | null;
+                while ((m = rx.exec(texto)) !== null) {
+                    const dep = path.parse(m[1].replace(/\//g, path.sep)).name.toLowerCase();
+                    if (dep && !visitados.has(dep) && index.has(dep)) {
+                        visitados.add(dep);
+                        fila.push(dep);
+                    }
+                }
+            }
+        }
     }
 
-    // Os `.ADD` têm que entrar no TOPO do bloco FILES (onde o FoxBin2Prg os processa).
-    // Inseridos depois, o arquivo não entra na coleção e o Exclude falha com Error 2061.
-    const addLines = relPaths
-        .map(
-            (rel) =>
-                `\t.ADD('${rel}')\t\t&& *< FileMetadata: Type="${metadataType(rel)}" Cpid="1252" ` +
-                'Timestamp="0" ID="0" ObjRev="544" User="" />'
-        )
-        .join('\r\n');
-
-    const rx = /^([ \t]*WITH loProject\.FILES[ \t]*\r?\n)/m;
-    if (!rx.test(text)) {
-        return { text, added: [] }; // estrutura inesperada: não mexe
+    const result: TextEntry[] = [];
+    for (const base of visitados) {
+        result.push(...(index.get(base) ?? []));
     }
-    let novo = text.replace(rx, `$1${addLines}\r\n`);
-    novo = addExcludedRefs(novo, relPaths);
-    return { text: novo, added: relPaths };
+    return result;
+}
+
+/** Materializa os `#INCLUDE` de vários textos antes do PRG2BIN. */
+function materializeIncludesEmLote(sources: string[], options: Pj2ExeOptions): void {
+    const pendentes = new Set<string>();
+    for (const src of sources) {
+        const r = materializeIncludes(src, options.convertEncoding, options.rootDir);
+        for (const nome of r.naoResolvidos) {
+            pendentes.add(nome);
+        }
+    }
+    if (pendentes.size > 0) {
+        options.log(`[AVISO] #INCLUDE sem .PR2 de origem: ${[...pendentes].join(', ')}`);
+    }
+}
+
+/**
+ * Regenera os binários das dependências a partir dos textos, na ordem de dependência.
+ * Pula quem já tem binário mais novo que o texto (cache por data de modificação).
+ * Os `.pr2` viram `.prg` por conversão de encoding; os demais passam pelo PRG2BIN.
+ */
+async function buildBinarySet(entries: TextEntry[], options: Pj2ExeOptions): Promise<number> {
+    const pendentes = entries
+        .filter((e) => {
+            const binPath = path.join(
+                path.dirname(e.textPath),
+                path.parse(e.textPath).name + e.binExt
+            );
+            try {
+                return fs.statSync(binPath).mtimeMs < fs.statSync(e.textPath).mtimeMs;
+            } catch {
+                return true; // binário ausente
+            }
+        })
+        .sort((a, b) => (BIN_ORDER[a.binExt] ?? 8) - (BIN_ORDER[b.binExt] ?? 8));
+
+    if (pendentes.length === 0) {
+        return 0;
+    }
+
+    let regenerados = 0;
+    const foxTexts: string[] = [];
+
+    for (const entry of pendentes) {
+        if (entry.binExt === '.prg') {
+            const r = writePrgFromPr2(entry.textPath, options.convertEncoding);
+            if (r.success) {
+                materializeIncludes(entry.textPath, options.convertEncoding, options.rootDir);
+                regenerados++;
+            }
+        } else {
+            foxTexts.push(entry.textPath);
+        }
+    }
+
+    if (foxTexts.length > 0) {
+        materializeIncludesEmLote(foxTexts, options);
+        const res = await convertFilesOrdered(foxTexts, options.extensionPath);
+        if (res.success) {
+            regenerados += foxTexts.length;
+        } else {
+            options.log(`[AVISO] regeneração de dependências incompleta: ${res.message}`);
+        }
+    }
+
+    return regenerados;
 }
 
 /** Executa o motor PowerShell que roda o `BUILD EXE ... RECOMPILE` com auto-clique. */
@@ -282,24 +397,24 @@ function runBuildExe(
 }
 
 /**
- * Gera o `.EXE` do projeto a partir do `.pj2`, com a guarda de auto-include.
- * O `.pj2` é editado temporariamente (HomeDir) e restaurado ao final — só as exclusões
- * descobertas permanecem, e são reportadas ao chamador.
+ * Gera o `.EXE` do projeto a partir do `.pj2`. O arquivo é alterado temporariamente
+ * (HomeDir local e remoção de refs quebradas) e restaurado ao final — o `.pj2` versionado
+ * não sofre alteração permanente.
  */
 export async function buildExeFromPj2(pj2Path: string, options: Pj2ExeOptions): Promise<Pj2ExeResult> {
+    const vazio = { refsRemovidas: [] as string[], binariosRegenerados: 0 };
     if (!isPj2File(pj2Path)) {
-        return { success: false, passes: 0, excluded: [], message: `Não é um projeto .pj2: ${pj2Path}` };
+        return { success: false, ...vazio, message: `Não é um projeto .pj2: ${pj2Path}` };
     }
     if (!fs.existsSync(pj2Path)) {
-        return { success: false, passes: 0, excluded: [], message: `Projeto não encontrado: ${pj2Path}` };
+        return { success: false, ...vazio, message: `Projeto não encontrado: ${pj2Path}` };
     }
 
     const lockKey = path.resolve(pj2Path).toLowerCase();
     if (emAndamento.has(lockKey)) {
         return {
             success: false,
-            passes: 0,
-            excluded: [],
+            ...vazio,
             message: 'Já há um build de EXE em andamento para este projeto — aguarde o anterior terminar.',
         };
     }
@@ -311,84 +426,61 @@ export async function buildExeFromPj2(pj2Path: string, options: Pj2ExeOptions): 
     const exeOut = expectedExe(pj2Path);
 
     const original = readText(pj2Path);
-    const inputBases = new Set(getAddRefs(original.text).map((r) => r.base));
-    const excluded: string[] = [];
-    let passes = 0;
+    let refsRemovidas: string[] = [];
+    let binariosRegenerados = 0;
 
     try {
-        writeText(pj2Path, setHomeDir(original.text, dir), original.utf8);
+        // 1) Refs .ADD stale — uma só quebra o EXE ou enche a tela de "Locate File".
+        const reparo = repairBrokenAdds(original.text, options.rootDir);
+        refsRemovidas = reparo.removidas;
+        if (refsRemovidas.length > 0) {
+            options.log(
+                `Refs .ADD sem arquivo correspondente, ignoradas neste build (${refsRemovidas.length}): ${refsRemovidas.join(', ')}`
+            );
+        }
 
+        // 2) Fecho de dependências: o repositório versiona os textos, e o BUILD EXE
+        //    precisa dos binários presentes e atualizados.
+        const index = indexTextsByBase(options.rootDir);
+        const closure = dependencyClosure(reparo.text, index);
+        binariosRegenerados = await buildBinarySet(closure, options);
+        if (binariosRegenerados > 0) {
+            options.log(`Dependências regeneradas antes do build: ${binariosRegenerados}.`);
+        }
+
+        // 3) HomeDir local + PRG2BIN do projeto.
+        writeText(pj2Path, setHomeDir(reparo.text, dir), original.utf8);
         const prg2bin = await convertPrg2Bin(pj2Path, options.extensionPath);
         if (!prg2bin.success) {
-            return { success: false, passes, excluded, message: `PRG2BIN do projeto falhou: ${prg2bin.message}` };
+            return {
+                success: false,
+                refsRemovidas,
+                binariosRegenerados,
+                message: `PRG2BIN do projeto falhou: ${prg2bin.message}`,
+            };
         }
 
-        options.log(`BUILD EXE (passada 1): ${path.basename(exeOut)}`);
-        let build = await runBuildExe(pjxPath, exeOut, options);
-        passes = 1;
+        // 4) BUILD EXE ... RECOMPILE, sem guarda de auto-include: os auto-includes são
+        //    dependências reais e removê-los produziria um EXE que não roda.
+        options.log(`BUILD EXE: ${path.basename(exeOut)}`);
+        const build = await runBuildExe(pjxPath, exeOut, options);
         if (!build.success) {
-            return { success: false, passes, excluded, message: build.message };
+            return { success: false, refsRemovidas, binariosRegenerados, message: build.message };
         }
-
-        // Guarda de auto-include: repete até nenhum arquivo novo aparecer no .pjx.
-        while (passes < options.maxPasses) {
-            const bin2prg = await convertBin2Prg(pjxPath, options.extensionPath);
-            if (!bin2prg.success) {
-                options.log(`[AVISO] guarda de auto-include pulada (BIN2PRG falhou): ${bin2prg.message}`);
-                break;
-            }
-
-            const regen = readText(pj2Path);
-            const novos = getAddRefs(regen.text).filter(
-                (r) => !inputBases.has(r.base) && !excluded.includes(r.base)
-            );
-            if (novos.length === 0) {
-                break; // estabilizou
-            }
-
-            options.log(
-                `Auto-include detectado (${novos.length}): ${novos.map((n) => n.base).join(', ')} — marcando como excludente e rebuildando.`
-            );
-            let texto = addExcludedRefs(regen.text, novos.map((n) => n.ref));
-            texto = setHomeDir(texto, dir);
-            writeText(pj2Path, texto, regen.utf8);
-
-            const rebuildBin = await convertPrg2Bin(pj2Path, options.extensionPath);
-            if (!rebuildBin.success) {
-                options.log(`[AVISO] PRG2BIN pós-exclusão falhou: ${rebuildBin.message}`);
-                break;
-            }
-
-            passes++;
-            options.log(`BUILD EXE (passada ${passes}): ${path.basename(exeOut)}`);
-            build = await runBuildExe(pjxPath, exeOut, options);
-            excluded.push(...novos.map((n) => n.base));
-            if (!build.success) {
-                return { success: false, passes, excluded, message: build.message };
-            }
-        }
-
         if (!fs.existsSync(exeOut)) {
-            return { success: false, passes, excluded, message: 'BUILD EXE terminou sem gerar o executável.' };
+            return {
+                success: false,
+                refsRemovidas,
+                binariosRegenerados,
+                message: 'BUILD EXE terminou sem gerar o executável.',
+            };
         }
-        return { success: true, exePath: exeOut, passes, excluded };
+        return { success: true, exePath: exeOut, refsRemovidas, binariosRegenerados };
     } catch (err) {
-        return { success: false, passes, excluded, message: (err as Error).message };
+        return { success: false, refsRemovidas, binariosRegenerados, message: (err as Error).message };
     } finally {
-        // Restaura o .pj2 do desenvolvedor (descarta o HomeDir local e o texto regenerado
-        // pelo BIN2PRG), preservando apenas as exclusões descobertas.
-        let restored = original.text;
-        if (excluded.length > 0) {
-            const persisted = persistAutoIncludes(restored, excluded, options.rootDir);
-            restored = persisted.text;
-            if (persisted.added.length > 0) {
-                options.log(
-                    `[INFO] ${path.basename(pj2Path)} atualizado com ${persisted.added.length} exclusão(ões) permanente(s): ${persisted.added.join(', ')} — revise o diff no git.`
-                );
-            }
-        }
         try {
-            writeText(pj2Path, restored, original.utf8);
+            writeText(pj2Path, original.text, original.utf8);
         } catch (err) {
             options.log(`[ERRO] falha ao restaurar ${pj2Path}: ${(err as Error).message}`);
         }

@@ -125,37 +125,6 @@ export async function convertPrg2Bin(
     return { success: true, outputs };
 }
 
-/**
- * Converte um binário VFP de volta para o texto FoxBin2Prg (BIN2PRG) — direção inversa
- * de `convertPrg2Bin`, sobrescrevendo o texto de mesmo nome no diretório do binário.
- *
- * Usado pela guarda de auto-include do build de EXE: após o `BUILD EXE ... RECOMPILE`, o
- * VFP9 grava no `.pjx` as dependências que ele mesmo detectou; regenerando o `.pj2` e
- * comparando com a lista de entrada, descobrimos o que entrou sem ter sido pedido.
- */
-export async function convertBin2Prg(
-    binPath: string,
-    extensionPath: string
-): Promise<FoxBin2PrgResult> {
-    const { foxPath, vbs } = enginePaths(extensionPath);
-    if (!fs.existsSync(vbs)) {
-        return { success: false, outputs: [], message: `Motor FoxBin2Prg não encontrado: ${vbs}` };
-    }
-    if (!fs.existsSync(binPath)) {
-        return { success: false, outputs: [], message: `Binário não encontrado: ${binPath}` };
-    }
-
-    const { code, stderr } = await execCscript(foxPath, [vbs, binPath, 'BIN2PRG'], 120000);
-    if (code !== 0) {
-        return {
-            success: false,
-            outputs: [],
-            message: `FoxBin2Prg (BIN2PRG) retornou código ${code}${stderr ? `\n${stderr}` : ''}`,
-        };
-    }
-    return { success: true, outputs: [] };
-}
-
 export interface FoxBin2PrgFolderResult {
     success: boolean;
     /** Quantidade de arquivos de texto considerados na pasta. */
@@ -163,13 +132,22 @@ export interface FoxBin2PrgFolderResult {
     message?: string;
 }
 
-/** Prioridade de tipo na compilação (menor = compila antes). */
+/**
+ * Prioridade de tipo na compilação (menor = compila antes), alinhada à ordem do
+ * `Build-Pj2BinarySet` do `vfp-compiler-installer`: classes antes dos formulários (que
+ * herdam delas), depois relatórios, labels, menus e bancos; o projeto por último, pois
+ * referencia todo o resto.
+ */
 function typeRank(ext: string): number {
     switch (ext.toLowerCase()) {
-        case '.vc2': return 0; // classes (antes dos formulários)
-        case '.sc2': return 1; // formulários
-        case '.pj2': return 3; // projeto por último (referencia tudo)
-        default: return 2;     // fr2, lb2, mn2, dc2
+        case '.vc2': return 1; // bibliotecas de classes
+        case '.sc2': return 2; // formulários
+        case '.fr2': return 3; // relatórios
+        case '.lb2': return 4; // labels
+        case '.mn2': return 5; // menus
+        case '.dc2': return 6; // bancos de dados
+        case '.pj2': return 9; // projeto (referencia tudo)
+        default: return 8;
     }
 }
 
@@ -197,7 +175,7 @@ export function orderFoxBin2PrgFiles(files: string[], vcxPriority: string[]): st
         if (ra !== rb) {
             return ra - rb;
         }
-        if (ra === 0) {
+        if (ra === 1) {
             const pa = prioIndex(a);
             const pb = prioIndex(b);
             if (pa !== pb) {

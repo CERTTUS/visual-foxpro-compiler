@@ -14,6 +14,7 @@ import {
 import { convertRpt2Rpa, isRptFile } from './rpt2rpa';
 import { PauseController, registerPauseCommand } from './pause';
 import { buildExeFromPj2, isPj2File, Pj2ExeResult } from './pj2exe';
+import { materializeIncludes } from './includes';
 
 /** Ordem padrão de compilação das bibliotecas de classes (VC2), por nome. */
 const DEFAULT_VCX_ORDER = ['vclFormularios', 'vclComponentesBasicos', 'vclComponentesIntegrados'];
@@ -120,11 +121,22 @@ function runCompiler(compilerPath: string, prgPath: string): Promise<{ error?: E
 async function compilePr2File(
     pr2Path: string,
     compilerPath: string,
-    convertEncoding: boolean
+    convertEncoding: boolean,
+    rootDir?: string,
+    outputChannel?: vscode.OutputChannel
 ): Promise<Pr2Result> {
     const writeResult = writePrgFromPr2(pr2Path, convertEncoding);
     if (!writeResult.success) {
         return { success: false, message: `Falha ao gerar .prg: ${writeResult.message}` };
+    }
+
+    // Materializa os #INCLUDE no caminho exato de cada diretiva. Sem isso o VFP não
+    // encontra o include e reescreve o path gravado no artefato compilado.
+    const includes = materializeIncludes(pr2Path, convertEncoding, rootDir);
+    if (outputChannel && includes.naoResolvidos.length > 0) {
+        outputChannel.appendLine(
+            `[AVISO] #INCLUDE sem .PR2 de origem em ${path.basename(pr2Path)}: ${includes.naoResolvidos.join(', ')}`
+        );
     }
 
     const prgPath = writeResult.prgPath;
@@ -177,7 +189,7 @@ async function ensureConstCompiled(
     }
 
     outputChannel.appendLine('CONST.FXP ausente — compilando CONST.PR2 (constantes) antes dos demais...');
-    const result = await compilePr2File(constPr2, compilerPath, convertEncoding);
+    const result = await compilePr2File(constPr2, compilerPath, convertEncoding, rootDir, outputChannel);
     if (result.success) {
         outputChannel.appendLine(`[OK]  PR2  ${constPr2}`);
     } else {
@@ -208,7 +220,8 @@ async function compilePr2(
         }
     }
 
-    const result = await compilePr2File(pr2Path, compilerPath, convertEncoding);
+    const wsRoot = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
+    const result = await compilePr2File(pr2Path, compilerPath, convertEncoding, wsRoot, outputChannel);
     outputChannel.appendLine(`Compilar (PR2) ${pr2Path}:`);
 
     if (!result.success) {
@@ -282,6 +295,31 @@ async function convertSq2(
 }
 
 /**
+ * Materializa os `#INCLUDE` de um conjunto de fontes antes do PRG2BIN. Os textos
+ * FoxBin2Prg (.sc2/.vc2/...) também trazem `#INCLUDE CONST.PRG` no código embutido, e
+ * o VFP reescreve o caminho gravado no binário se não encontrar o arquivo no ponto exato
+ * que a diretiva aponta.
+ */
+function prepararIncludes(
+    sources: string[],
+    convertEncoding: boolean,
+    rootDir: string | undefined,
+    outputChannel: vscode.OutputChannel
+): void {
+    const pendentes = new Set<string>();
+    for (const src of sources) {
+        for (const nome of materializeIncludes(src, convertEncoding, rootDir).naoResolvidos) {
+            pendentes.add(nome);
+        }
+    }
+    if (pendentes.size > 0) {
+        outputChannel.appendLine(
+            `[AVISO] #INCLUDE sem .PR2 de origem: ${[...pendentes].join(', ')} — o VFP pode reescrever o caminho no binário.`
+        );
+    }
+}
+
+/**
  * Fluxo FoxBin2Prg ao salvar: gera os binários VFP correspondentes (PRG2BIN)
  * via VFP9 instalado (COM) e o motor foxbin2prg embarcado em `bin/foxbin2prg`.
  */
@@ -316,6 +354,13 @@ async function runFoxBin2Prg(
         }
         return;
     }
+
+    prepararIncludes(
+        [textPath],
+        config.get<boolean>('convertEncodingBeforeCompile', true),
+        wsFolder?.uri.fsPath,
+        outputChannel
+    );
 
     outputChannel.appendLine(`FoxBin2Prg (PRG2BIN): ${textPath}`);
     vscode.window.setStatusBarMessage('Gerando binário VFP (FoxBin2Prg)...', 5000);
@@ -372,8 +417,8 @@ async function runPj2Exe(
         extensionPath: context.extensionPath,
         vfp9Path: config.get<string>('vfp9Path', '') || undefined,
         timeoutMs: Math.max(1, timeoutMinutes) * 60000,
-        maxPasses: 3,
         rootDir: wsFolder ? wsFolder.uri.fsPath : path.dirname(pj2Path),
+        convertEncoding: config.get<boolean>('convertEncodingBeforeCompile', true),
         log: (m) => outputChannel.appendLine(m),
     });
 }
@@ -575,7 +620,16 @@ async function compileFileSet(
                 }
                 advance(path.basename(pr2Path));
                 pendentes.pr2.shift();
-                const result = await compilePr2File(pr2Path, compilerPath, convertEncoding);
+                const rootDoPr2 =
+                    folders.find((fo) => isUnder(pr2Path, fo.uri.fsPath))?.uri.fsPath ??
+                    folders[0]?.uri.fsPath;
+                const result = await compilePr2File(
+                    pr2Path,
+                    compilerPath,
+                    convertEncoding,
+                    rootDoPr2,
+                    outputChannel
+                );
                 if (result.success) {
                     pr2Ok++;
                     outputChannel.appendLine(`[OK]  PR2  ${pr2Path}`);
@@ -639,6 +693,7 @@ async function compileFileSet(
                     }
 
                     const orderedFiles = orderFoxBin2PrgFiles(filesInFolder, vcxOrder);
+                    prepararIncludes(orderedFiles, convertEncoding, folderPath, outputChannel);
 
                     // Progresso por arquivo durante a sessão única do VFP9.
                     const baseDone = done;
@@ -717,7 +772,12 @@ async function compileFileSet(
                 try {
                     result = await runPj2Exe(pj2Path, context, config, outputChannel);
                 } catch (err) {
-                    result = { success: false, passes: 0, excluded: [], message: (err as Error).message };
+                    result = {
+                        success: false,
+                        refsRemovidas: [],
+                        binariosRegenerados: 0,
+                        message: (err as Error).message,
+                    };
                 }
                 if (result.success) {
                     exeOk++;
@@ -1243,7 +1303,11 @@ async function buildTarget(
 /** Escreve no Output o resultado do build de EXE de um projeto. */
 function reportPj2Exe(pj2Path: string, result: Pj2ExeResult, outputChannel: vscode.OutputChannel): void {
     if (result.success) {
-        const extra = result.passes > 1 ? ` (${result.passes} passadas — auto-include tratado)` : '';
+        const detalhes = [
+            result.binariosRegenerados > 0 ? `${result.binariosRegenerados} dep(s) regenerada(s)` : '',
+            result.refsRemovidas.length > 0 ? `${result.refsRemovidas.length} ref(s) stale ignorada(s)` : '',
+        ].filter(Boolean);
+        const extra = detalhes.length > 0 ? ` (${detalhes.join(', ')})` : '';
         outputChannel.appendLine(`[OK]  EXE  ${result.exePath}${extra}`);
     } else {
         outputChannel.appendLine(`[ERRO] EXE  ${pj2Path}: ${result.message ?? ''}`);
