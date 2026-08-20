@@ -20,6 +20,10 @@ Para os projetos, há um passo a mais:
 
 - **`.pj2`** → além do `.pjx`/`.pjt`, gera o **`.EXE`** do projeto (`BUILD EXE ... RECOMPILE` no VFP9). Vale ao salvar o `.pj2` e nos comandos de compilação, onde o projeto é sempre o último passo. Controlado por `enablePj2Exe` (ativado por padrão) — ver [Build do EXE](#build-do-exe-pj2--exe).
 
+E os projetos **VB.NET** do repositório:
+
+- **`.vb` / `.resx` / `.vbproj` / `.settings` / `.snk` / `.manifest` / `.myapp` / `.config`** → recompila a **DLL** do projeto que contém o arquivo, via **MSBuild**. Sem isso o VFP continua chamando por COM a DLL antiga. Controlado por `enableMsbuild` (ativado por padrão).
+
 Além disso, nos comandos de compilação (repositório/alterados):
 
 - **`.rpt`** (relatórios do **Crystal Reports**) → gera o **`.RPA`** (arquivo texto) de mesmo nome/diretório, usando o `GeradorDiferencasRelatorio` embarcado, acionado pelo Visual FoxPro 9 (COM). O `.RPA` permite versionar e comparar (diff) os relatórios binários no controle de versão. **Não há gatilho ao salvar** — o `.rpt` é binário; a geração ocorre apenas nos comandos de build. No **Compilar arquivos alterados (git)**, um `.rpt` alterado **sempre** gera o `.RPA`; no **Compilar todo o repositório**, depende da configuração `enableRpt2Rpa` (desativada por padrão). Exige Crystal Reports e banco (ver [Requisitos](#requisitos)).
@@ -78,6 +82,8 @@ Compilação cancelada — 287 arquivo(s) não foram compilados.   [ Retomar de 
 A retomada compila **apenas o que faltava** — o que já foi gerado permanece. A pendência é registrada arquivo a arquivo nos `.pr2`, `.sq2`, `.rpt` e projetos; nos textos FoxBin2Prg ela é **por pasta**, porque a sessão única do VFP9 não pode ser interrompida no meio: uma pasta só sai da pendência quando termina, e retomar refaz aquela pasta desde o início.
 
 A pausa acontece **entre arquivos** — o arquivo em processamento sempre termina — e vale inclusive **dentro da sessão única do VFP9** do FoxBin2Prg, que é a etapa mais demorada. **Cancelar tem precedência sobre pausar**: se você cancelar durante uma pausa, a espera é destravada e o build encerra. O tempo pausado não conta para o timeout da sessão do VFP9.
+
+> **`#INCLUDE`**: antes de compilar, cada diretiva `#INCLUDE` do fonte é resolvida **no caminho exato que ela aponta** — `..\CONST.PRG` a partir de uma subpasta vira o arquivo uma pasta acima — gerando o `.PRG` do `.PR2` correspondente. Materializar só o nome base na raiz não basta: o VFP não acha o alvo e reescreve o caminho gravado no artefato compilado. Arquivos já existentes nunca são sobrescritos.
 
 > **CONST.FXP**: antes de compilar os PR2 (tanto no build quanto ao salvar um `.pr2`), a extensão verifica se o `CONST.FXP` existe na raiz do repositório. Se não existir e houver um `CONST.PR2`, ele é compilado primeiro — assim os PR2 que fazem `#INCLUDE CONST.PRG` não falham por constantes ausentes.
 

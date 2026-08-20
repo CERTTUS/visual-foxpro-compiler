@@ -15,6 +15,13 @@ import { convertRpt2Rpa, isRptFile } from './rpt2rpa';
 import { PauseController, registerPauseCommand } from './pause';
 import { buildExeFromPj2, isPj2File, Pj2ExeResult } from './pj2exe';
 import { materializeIncludes } from './includes';
+import {
+    buildDotNetProject,
+    isDotNetSource,
+    projectsForSources,
+    DOTNET_SOURCE_EXTENSIONS,
+    MsbuildResult,
+} from './msbuild';
 
 /** Ordem padrão de compilação das bibliotecas de classes (VC2), por nome. */
 const DEFAULT_VCX_ORDER = ['vclFormularios', 'vclComponentesBasicos', 'vclComponentesIntegrados'];
@@ -66,6 +73,11 @@ export function activate(context: vscode.ExtensionContext) {
 
         if (config.get<boolean>('enableFoxBin2Prg', true) && isFoxBin2PrgText(document.fileName)) {
             await runFoxBin2Prg(document, context, outputChannel, config);
+            return;
+        }
+
+        if (config.get<boolean>('enableMsbuild', true) && isDotNetSource(document.fileName)) {
+            await runMsbuild(document, outputChannel, config);
             return;
         }
     });
@@ -423,6 +435,60 @@ async function runPj2Exe(
     });
 }
 
+/** Opções do MSBuild a partir das configurações da extensão. */
+function msbuildOptions(
+    config: vscode.WorkspaceConfiguration,
+    outputChannel: vscode.OutputChannel
+) {
+    return {
+        msbuildPath: config.get<string>('msbuildPath', '') || undefined,
+        configuration: config.get<string>('msbuildConfiguration', 'Release'),
+        timeoutMs: Math.max(1, config.get<number>('msbuildTimeoutMinutes', 10)) * 60000,
+        log: (m: string) => outputChannel.appendLine(m),
+    };
+}
+
+/** Escreve no Output o resultado da compilação de um projeto .NET. */
+function reportMsbuild(result: MsbuildResult, outputChannel: vscode.OutputChannel): void {
+    if (result.success) {
+        outputChannel.appendLine(`[OK]  NET  ${result.project}`);
+    } else {
+        outputChannel.appendLine(`[ERRO] NET  ${result.project}: ${result.message ?? ''}`);
+    }
+}
+
+/**
+ * Fluxo .NET ao salvar: recompila, via MSBuild, o projeto que contém o arquivo salvo
+ * (`.vb`, `.resx`, `.vbproj`, ...). Sem isso o VFP continuaria chamando a DLL antiga.
+ */
+async function runMsbuild(
+    document: vscode.TextDocument,
+    outputChannel: vscode.OutputChannel,
+    config: vscode.WorkspaceConfiguration
+): Promise<void> {
+    const wsFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+    const root = wsFolder ? wsFolder.uri.fsPath : path.dirname(document.fileName);
+    const projetos = projectsForSources([document.fileName], root);
+    if (projetos.length === 0) {
+        outputChannel.appendLine(
+            `[AVISO] .vbproj não encontrado para ${path.basename(document.fileName)} — nada compilado.`
+        );
+        return;
+    }
+
+    outputChannel.appendLine(`MSBuild: ${projetos[0]}`);
+    vscode.window.setStatusBarMessage('Compilando projeto .NET (MSBuild)...', 5000);
+    const result = await buildDotNetProject(projetos[0], msbuildOptions(config, outputChannel));
+    reportMsbuild(result, outputChannel);
+    outputChannel.appendLine('---');
+    if (result.success) {
+        vscode.window.setStatusBarMessage('DLL gerada (MSBuild)', 10000);
+    } else {
+        vscode.window.showErrorMessage('Erro ao compilar o projeto .NET.');
+        outputChannel.show(true);
+    }
+}
+
 /** Glob (case-insensitive) das extensões de texto FoxBin2Prg, p.ex. `sc2,SC2,vc2,...`. */
 function foxBin2PrgGlobExts(): string {
     return FOXBIN2PRG_TEXT_EXTENSIONS
@@ -460,8 +526,11 @@ async function buildWorkspace(
     const textUris = enableFoxBin2Prg
         ? await vscode.workspace.findFiles(`**/*.{${foxBin2PrgGlobExts()}}`, exclude)
         : [];
+    const netUris = config.get<boolean>('enableMsbuild', true)
+        ? await vscode.workspace.findFiles('**/*.{vbproj,VBPROJ}', exclude)
+        : [];
 
-    if (pr2Uris.length + sq2Uris.length + rptUris.length + textUris.length === 0) {
+    if (pr2Uris.length + sq2Uris.length + rptUris.length + textUris.length + netUris.length === 0) {
         vscode.window.showInformationMessage('Nenhum fonte FoxPro (.pr2/.sq2/.rpt/.sc2/.vc2/...) encontrado no repositório.');
         return;
     }
@@ -482,6 +551,7 @@ async function buildWorkspace(
         textUris.map((u) => u.fsPath),
         sq2Uris.map((u) => u.fsPath),
         rptUris.map((u) => u.fsPath),
+        netUris.map((u) => u.fsPath),
         folders,
         context,
         outputChannel,
@@ -507,6 +577,7 @@ async function compileFileSet(
     textPaths: string[],
     sq2Paths: string[],
     rptPaths: string[],
+    dotNetProjects: string[],
     folders: readonly vscode.WorkspaceFolder[],
     context: vscode.ExtensionContext,
     outputChannel: vscode.OutputChannel,
@@ -528,7 +599,8 @@ async function compileFileSet(
     // Os `.rpt` já vêm filtrados pelo chamador: "Compilar todo o repositório" respeita
     // `enableRpt2Rpa`; "Compilar alterados (git)" sempre inclui os `.rpt` alterados.
     const rpts = rptPaths;
-    const total = pr2Paths.length + texts.length + sq2Paths.length + rpts.length;
+    const dotNet = config.get<boolean>('enableMsbuild', true) ? dotNetProjects : [];
+    const total = pr2Paths.length + texts.length + sq2Paths.length + rpts.length + dotNet.length;
 
     const compilerPath = path.join(context.extensionPath, 'bin', 'visual-foxpro-compiler.exe');
 
@@ -546,6 +618,8 @@ async function compileFileSet(
     let foxFail = 0;
     let exeOk = 0;
     let exeFail = 0;
+    let netOk = 0;
+    let netFail = 0;
 
     // O que ainda não foi processado. Se o build for cancelado, é o que sobra aqui que
     // permite oferecer a retomada de onde parou, em vez de recomeçar do zero.
@@ -555,6 +629,7 @@ async function compileFileSet(
         rpt: [...rpts],
         texts: [...foxTexts],
         pj2: [...pj2Projects],
+        net: [...dotNet],
     };
     let cancelado = false;
 
@@ -786,6 +861,27 @@ async function compileFileSet(
                 }
                 reportPj2Exe(pj2Path, result, outputChannel);
             }
+
+            // 4) Projetos .NET (VB.NET) via MSBuild — as DLLs que o VFP consome por COM.
+            for (const proj of dotNet) {
+                if (!(await gate())) {
+                    return;
+                }
+                advance(path.basename(proj));
+                let result: MsbuildResult;
+                try {
+                    result = await buildDotNetProject(proj, msbuildOptions(config, outputChannel));
+                } catch (err) {
+                    result = { success: false, project: proj, message: (err as Error).message };
+                }
+                if (result.success) {
+                    netOk++;
+                } else {
+                    netFail++;
+                }
+                pendentes.net.shift();
+                reportMsbuild(result, outputChannel);
+            }
         }
     );
 
@@ -797,10 +893,11 @@ async function compileFileSet(
     }
 
     const exeResumo = pj2Projects.length > 0 ? ` EXE ${exeOk} ok / ${exeFail} erro(s);` : '';
-    const summary = `Compilação concluída: PR2 ${pr2Ok} ok / ${pr2Fail} erro(s); SQ2 ${sqlOk} ok / ${sqlFail} erro(s); RPT ${rpaOk} ok / ${rpaFail} erro(s);${exeResumo} FoxBin2Prg ${foxOk} ok / ${foxWarn} aviso(s) / ${foxFail} erro(s).`;
+    const netResumo = dotNet.length > 0 ? ` .NET ${netOk} ok / ${netFail} erro(s);` : '';
+    const summary = `Compilação concluída: PR2 ${pr2Ok} ok / ${pr2Fail} erro(s); SQ2 ${sqlOk} ok / ${sqlFail} erro(s); RPT ${rpaOk} ok / ${rpaFail} erro(s);${exeResumo}${netResumo} FoxBin2Prg ${foxOk} ok / ${foxWarn} aviso(s) / ${foxFail} erro(s).`;
     outputChannel.appendLine(summary);
     outputChannel.appendLine('---');
-    if (pr2Fail > 0 || sqlFail > 0 || rpaFail > 0 || exeFail > 0 || foxFail > 0 || foxWarn > 0) {
+    if (pr2Fail > 0 || sqlFail > 0 || rpaFail > 0 || exeFail > 0 || netFail > 0 || foxFail > 0 || foxWarn > 0) {
         vscode.window.showWarningMessage(summary);
     } else if (!cancelado) {
         vscode.window.showInformationMessage(summary);
@@ -819,7 +916,14 @@ async function compileFileSet(
  * seu resumo já foi mostrado, então a retomada é uma execução nova, não um aninhamento.
  */
 function offerResume(
-    pendentes: { pr2: string[]; sq2: string[]; rpt: string[]; texts: string[]; pj2: string[] },
+    pendentes: {
+        pr2: string[];
+        sq2: string[];
+        rpt: string[];
+        texts: string[];
+        pj2: string[];
+        net: string[];
+    },
     folders: readonly vscode.WorkspaceFolder[],
     context: vscode.ExtensionContext,
     outputChannel: vscode.OutputChannel,
@@ -831,7 +935,8 @@ function offerResume(
         pendentes.sq2.length +
         pendentes.rpt.length +
         pendentes.texts.length +
-        pendentes.pj2.length;
+        pendentes.pj2.length +
+        pendentes.net.length;
 
     outputChannel.appendLine(
         `[CANCELADO] ${restantes} arquivo(s) não processado(s). O que já foi compilado permanece.`
@@ -859,6 +964,7 @@ function offerResume(
                 [...pendentes.texts, ...pendentes.pj2],
                 pendentes.sq2,
                 pendentes.rpt,
+                pendentes.net,
                 folders,
                 context,
                 outputChannel,
@@ -954,8 +1060,9 @@ async function buildChangedFiles(
     const sq2Paths = changed.filter((p) => p.toLowerCase().endsWith('.sq2'));
     const rptPaths = changed.filter((p) => isRptFile(p));
     const textPaths = changed.filter((p) => isFoxBin2PrgText(p));
+    const netProjects = projectsForSources(changed.filter(isDotNetSource), folders[0].uri.fsPath);
 
-    if (pr2Paths.length + sq2Paths.length + rptPaths.length + textPaths.length === 0) {
+    if (pr2Paths.length + sq2Paths.length + rptPaths.length + textPaths.length + netProjects.length === 0) {
         vscode.window.showInformationMessage('Nenhum fonte FoxPro alterado (.pr2/.sq2/.rpt/.sc2/.vc2/...) segundo o git.');
         return;
     }
@@ -965,6 +1072,7 @@ async function buildChangedFiles(
         textPaths,
         sq2Paths,
         rptPaths,
+        netProjects,
         folders,
         context,
         outputChannel,
@@ -975,7 +1083,13 @@ async function buildChangedFiles(
 }
 
 /** Extensões de fonte aceitas pelo comando "Compilar arquivo ou diretório". */
-const SUPPORTED_SOURCE_EXTENSIONS = ['.pr2', '.sq2', '.rpt', ...FOXBIN2PRG_TEXT_EXTENSIONS];
+const SUPPORTED_SOURCE_EXTENSIONS = [
+    '.pr2',
+    '.sq2',
+    '.rpt',
+    ...FOXBIN2PRG_TEXT_EXTENSIONS,
+    ...DOTNET_SOURCE_EXTENSIONS,
+];
 
 /** Pastas ignoradas ao varrer um diretório (espelha o exclude do build do repositório). */
 const SCAN_EXCLUDE_DIRS = new Set(['node_modules', '.git', 'foxbin2prg', 'rpt2rpa']);
@@ -1257,6 +1371,12 @@ async function buildTarget(
     const sq2Paths = unique.filter((p) => p.toLowerCase().endsWith('.sq2'));
     const rptPaths = unique.filter((p) => isRptFile(p) && (explicit.has(p) || enableRpt2Rpa));
     const textPaths = enableFoxBin2Prg ? unique.filter((p) => isFoxBin2PrgText(p)) : [];
+    const netProjects = config.get<boolean>('enableMsbuild', true)
+        ? projectsForSources(
+              unique.filter(isDotNetSource),
+              foldersForTargets(targets)[0]?.uri.fsPath ?? path.dirname(targets[0])
+          )
+        : [];
 
     const rptSkipped = unique.filter((p) => isRptFile(p)).length - rptPaths.length;
     if (rptSkipped > 0) {
@@ -1265,7 +1385,8 @@ async function buildTarget(
         );
     }
 
-    const total = pr2Paths.length + sq2Paths.length + rptPaths.length + textPaths.length;
+    const total =
+        pr2Paths.length + sq2Paths.length + rptPaths.length + textPaths.length + netProjects.length;
     if (total === 0) {
         vscode.window.showInformationMessage(
             'Nenhum fonte FoxPro (.pr2/.sq2/.rpt/.sc2/.vc2/...) encontrado no alvo selecionado.'
@@ -1277,7 +1398,7 @@ async function buildTarget(
 
     if (config.get<boolean>('confirmBuildRepository', true) && total > 1) {
         const pick = await vscode.window.showWarningMessage(
-            `Compilar ${label}? Serão processados ${pr2Paths.length} arquivo(s) .pr2, ${sq2Paths.length} arquivo(s) .sq2, ${rptPaths.length} relatório(s) .rpt e ${textPaths.length} texto(s) FoxBin2Prg. Binários existentes serão sobrescritos.`,
+            `Compilar ${label}? Serão processados ${pr2Paths.length} arquivo(s) .pr2, ${sq2Paths.length} arquivo(s) .sq2, ${rptPaths.length} relatório(s) .rpt ${textPaths.length} texto(s) FoxBin2Prg e ${netProjects.length} projeto(s) .NET. Binários existentes serão sobrescritos.`,
             { modal: true },
             'Compilar'
         );
@@ -1291,6 +1412,7 @@ async function buildTarget(
         textPaths,
         sq2Paths,
         rptPaths,
+        netProjects,
         foldersForTargets(targets),
         context,
         outputChannel,

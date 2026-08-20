@@ -1,6 +1,36 @@
 # Change Log
 
 
+## [1.7.0]
+
+Auditoria de paridade com o `vfp-compiler-installer` (que não foi alterado). Cada item abaixo espelha uma rotina de lá.
+
+### Build do EXE (`.pj2`) — correção importante
+
+- **Guarda de auto-include removida.** A referência tem dois modos: `Invoke-VfpExeSparseLote` (workspace sparse + guarda) apenas **valida que compila** — o EXE dele **não roda**, porque a guarda exclui auto-includes que são dependências necessárias; e `Invoke-VfpExeFullBuild` (working tree completo, **sem** guarda), que gera o EXE utilizável. A extensão builda in-place, ou seja, é o segundo caso, mas aplicava a guarda do primeiro — e ainda persistia as exclusões no `.pj2` do desenvolvedor. Agora segue o `FullBuild`, e o `.pj2` é sempre restaurado ao final.
+- **Refs `.ADD` stale** (`Repair-Pj2BrokenAdds`): referências cujo arquivo não existe — nem o binário, nem o texto FoxBin de origem — são ignoradas no build. Uma única ref quebrada gera EXE defeituoso (menus que não instanciam) ou centenas de diálogos *Locate File* até o timeout.
+- **Fecho de dependências** (`Get-Pj2DependencyClosure` + `Build-Pj2BinarySet`): o repositório versiona os textos, não os binários. Antes do `BUILD EXE`, o fecho é percorrido em largura a partir dos `.ADD` — seguindo `SET CLASSLIB`, `DO FORM`, classe-pai e nomes citados — e os binários faltantes ou desatualizados são regenerados, com cache por data de modificação.
+
+### `#INCLUDE` (`.pr2` e textos FoxBin2Prg)
+
+- Novo `src/includes.ts`, espelhando `New-IncludesMaterializados`: cada diretiva `#INCLUDE` é resolvida **no caminho exato que aponta** (`..\CONST.PRG`, `foo.h`, caminho absoluto), gerando o `.PRG` a partir do `.PR2` correspondente. Antes só se garantia o `CONST.FXP` na raiz — e, sem o arquivo no ponto certo, o VFP **reescreve o path gravado no artefato compilado** (bug conhecido na referência, v2.16.77). Arquivos já existentes nunca são sobrescritos.
+
+### Projetos VB.NET (`.vb`)
+
+- Novo `src/msbuild.ts`, espelhando `MsbuildCompiler.ps1`: ao salvar `.vb`, `.resx`, `.vbproj`, `.settings`, `.snk`, `.manifest`, `.myapp` ou `.config`, a extensão sobe a árvore até o `.vbproj` **mais profundo** que contém o arquivo e regera a DLL. Preferir o mais profundo evita os `.vbproj` órfãos duplicados em vários níveis (MSB3552). Sem esse passo, o VFP segue chamando por COM a DLL antiga.
+- Os três comandos de compilação passam a incluir um passo .NET, sempre após os artefatos VFP. Novas configurações: `enableMsbuild`, `msbuildPath`, `msbuildConfiguration` e `msbuildTimeoutMinutes`.
+- A busca pelo MSBuild segue a ordem da referência — o do .NET Framework (v4.0.30319) antes dos do Visual Studio — porque os projetos alvo são .NET 3.5/4.x.
+
+### Ordem de compilação
+
+- Alinhada ao `Build-Pj2BinarySet`: `VC2`, `SC2`, `FR2`, `LB2`, `MN2`, `DC2` e `PJ2` por último. Antes, só `VC2` e `SC2` tinham posição definida e o restante caía em ordem alfabética.
+
+### Fora de escopo, por decisão
+
+- **Versionamento automático** do EXE e das DLLs (`Get-NextExeVersion`, `exe-versions.json`): é responsabilidade da pipeline. Aqui vale o que está no `<DevInfo>` do `.pj2` e no `AssemblyInfo` do projeto .NET.
+- **Workspace sparse**, deploy e clone dedicado: só fazem sentido no servidor de build.
+- **`Reset-VfpIdeEnvironment`** (zerar `_STARTUP` no registro) e matar instâncias órfãs do VFP9: continuam apenas como aviso — mexer no registro ou derrubar o IDE do desenvolvedor seria intrusivo demais numa extensão de editor.
+
 ## [1.6.4]
 
 - Fix: **removidas as notificações de controle** introduzidas na 1.6.2. Como notificações não podem ser fechadas por código, cada build (e cada retomada) deixava mais uma para trás, com contador congelado — três empilhadas na tela em vez de uma. O Pausar/Retomar volta a viver **apenas no item da barra de status** e na paleta de comandos.

@@ -63,6 +63,28 @@
           "minimum": 1,
           "description": "Tempo máximo (em minutos) de cada BUILD EXE de projeto .pj2. Esgotado o prazo, o vfp9.exe é encerrado e o build é reportado como falha."
         },
+        "visualFoxproCompiler.enableMsbuild": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Compilar os projetos **VB.NET** do repositório com o **MSBuild**. Ao salvar um `.vb`, `.resx`, `.vbproj`, `.settings`, `.snk`, `.manifest`, `.myapp` ou `.config`, a extensão sobe a árvore, encontra o `.vbproj` que contém o arquivo e regera a DLL.\n\nSem isso, o VFP continua chamando por COM a DLL antiga. Nos comandos de compilação, o passo .NET roda depois dos artefatos VFP.\n\nA DLL sai com a versão declarada no `AssemblyInfo` do projeto — a extensão não versiona automaticamente."
+        },
+        "visualFoxproCompiler.msbuildPath": {
+          "type": "string",
+          "default": "",
+          "description": "Caminho completo do MSBuild.exe. Vazio: procura o MSBuild do .NET Framework (v4.0.30319) e, depois, os do Visual Studio 2022/2019. O legado vem primeiro porque os projetos alvo são .NET 3.5/4.x."
+        },
+        "visualFoxproCompiler.msbuildConfiguration": {
+          "type": "string",
+          "default": "Release",
+          "enum": ["Release", "Debug"],
+          "description": "Configuração usada ao compilar os projetos VB.NET."
+        },
+        "visualFoxproCompiler.msbuildTimeoutMinutes": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "description": "Tempo máximo (em minutos) de cada compilação de projeto .NET."
+        },
         "visualFoxproCompiler.confirmBuildRepository": {
           "type": "boolean",
           "default": true,
