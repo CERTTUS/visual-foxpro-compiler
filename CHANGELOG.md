@@ -1,6 +1,12 @@
 # Change Log
 
 
+## [1.6.1]
+
+- Fix: no comando **Compilar arquivo ou diretório**, o caminho **digitado ou colado** na própria caixa de seleção passa a valer. Antes, o texto digitado só filtrava a lista: se não casasse com nenhuma opção, o Enter não fazia nada. Agora aparece um item no topo (`Compilar arquivo:` / `Compilar pasta:`) e o Enter compila direto, sem passar pelo diálogo do sistema. As três opções da lista continuam funcionando como antes.
+- Aceita caminho **relativo** (resolvido a partir do primeiro workspace folder) e **entre aspas** — é como o "Copiar como caminho" do Explorer do Windows entrega. Caminho inexistente mostra `Caminho não encontrado` e mantém a caixa aberta para correção, em vez de fechar silenciosamente.
+- Internamente, a caixa passou de `showQuickPick` para `createQuickPick`: só assim é possível ler o texto digitado quando ele não corresponde a nenhum item da lista.
+
 ## [1.6.0]
 
 - Feat: **build do executável** dos projetos `.pj2` — o fluxo passa a ser `.pj2` → `.pjx/.pjt` (PRG2BIN) → **`.EXE`** (`BUILD EXE ... RECOMPILE` no VFP9). Integrado: vale ao **salvar** um `.pj2` e nos três comandos de compilação (repositório, alterados e arquivo/diretório), onde o projeto é sempre o último passo. Nova configuração `visualFoxproCompiler.enablePj2Exe` (padrão: ativado), além de `vfp9Path` e `pj2ExeTimeoutMinutes`.

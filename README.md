@@ -44,6 +44,9 @@ Quando não se quer o repositório inteiro nem depender do que o git aponta como
 | **Arquivo atual** | Compila o fonte aberto no editor (só aparece se a extensão for suportada) |
 | **Escolher arquivo(s)…** | Diálogo do sistema, com seleção múltipla |
 | **Escolher pasta…** | Diálogo do sistema; compila todos os fontes da pasta, **incluindo subpastas** |
+| **Digitar o caminho** | Digite ou cole um caminho na própria caixa e tecle Enter — compila direto, sem diálogo |
+
+O caminho digitado pode ser **relativo** (a partir da raiz do workspace) e pode vir **entre aspas**, como o "Copiar como caminho" do Explorer do Windows entrega. Se não existir, a caixa avisa e continua aberta para correção.
 
 O mesmo comando está no **menu de contexto do Explorer**: clique com o botão direito numa pasta ou num fonte (`.pr2`, `.sq2`, `.rpt`, `.sc2`, `.vc2`, `.fr2`, `.lb2`, `.mn2`, `.pj2`, `.dc2`) — a seleção múltipla também é aceita.
 

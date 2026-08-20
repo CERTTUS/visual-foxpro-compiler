@@ -867,25 +867,78 @@ function collectSources(dir: string, acc: string[] = []): string[] {
 
 interface TargetPick extends vscode.QuickPickItem {
     /** `kind` é reservado pelo QuickPickItem (separadores), daí o nome `target`. */
-    target: 'active' | 'file' | 'folder';
+    target: 'active' | 'file' | 'folder' | 'typed' | 'invalid';
+    /** Caminho já resolvido, quando o alvo foi digitado na própria caixa. */
+    fsPath?: string;
 }
 
 /**
- * Pergunta o que compilar (arquivo atual, arquivo(s) ou pasta) e abre o diálogo do
- * sistema. O passo prévio é necessário porque, no Windows, o diálogo do VS Code não
- * seleciona arquivos e pastas ao mesmo tempo.
+ * Interpreta o texto digitado na caixa como um caminho: aceita aspas em volta (o
+ * "Copiar como caminho" do Explorer do Windows as inclui) e caminhos relativos ao
+ * primeiro workspace folder. Devolve o item a ser oferecido no topo da lista.
+ */
+function resolveTypedTarget(value: string): TargetPick | undefined {
+    const raw = value.trim().replace(/^"+|"+$/g, '').trim();
+    if (!raw) {
+        return undefined;
+    }
+    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const abs = path.isAbsolute(raw)
+        ? path.normalize(raw)
+        : path.resolve(wsRoot ?? process.cwd(), raw);
+
+    let stat: fs.Stats;
+    try {
+        stat = fs.statSync(abs);
+    } catch {
+        return {
+            target: 'invalid',
+            label: '$(error) Caminho não encontrado',
+            description: abs,
+            alwaysShow: true,
+        };
+    }
+
+    if (stat.isDirectory()) {
+        return {
+            target: 'typed',
+            fsPath: abs,
+            label: `$(folder) Compilar pasta: ${abs}`,
+            detail: 'Todos os fontes da pasta, incluindo subpastas',
+            alwaysShow: true,
+        };
+    }
+    return {
+        target: 'typed',
+        fsPath: abs,
+        label: `$(file) Compilar arquivo: ${abs}`,
+        detail: isSupportedSource(abs)
+            ? 'Fonte Visual FoxPro suportado'
+            : 'Extensão não suportada — nada será compilado',
+        alwaysShow: true,
+    };
+}
+
+/**
+ * Pergunta o que compilar. Além das opções da lista (arquivo atual, arquivo(s) ou
+ * pasta, que abrem o diálogo do sistema), aceita o caminho **digitado ou colado** na
+ * própria caixa: nesse caso um item aparece no topo e o Enter compila direto, sem
+ * passar pelo diálogo.
+ *
+ * Usa `createQuickPick` (e não `showQuickPick`) justamente porque só assim dá para ler
+ * o texto digitado quando ele não corresponde a nenhuma opção da lista.
  */
 async function pickBuildTargets(): Promise<string[] | undefined> {
-    const items: TargetPick[] = [];
     const activeDoc = vscode.window.activeTextEditor?.document;
+    const base: TargetPick[] = [];
     if (activeDoc && isSupportedSource(activeDoc.fileName)) {
-        items.push({
+        base.push({
             target: 'active',
             label: `$(file-code) Arquivo atual: ${path.basename(activeDoc.fileName)}`,
             detail: activeDoc.fileName,
         });
     }
-    items.push(
+    base.push(
         {
             target: 'file',
             label: '$(file) Escolher arquivo(s)...',
@@ -898,18 +951,55 @@ async function pickBuildTargets(): Promise<string[] | undefined> {
         }
     );
 
-    const choice = await vscode.window.showQuickPick(items, {
-        placeHolder: 'O que deseja compilar?',
-        ignoreFocusOut: true,
+    const escolha = await new Promise<TargetPick | undefined>((resolve) => {
+        const quickPick = vscode.window.createQuickPick<TargetPick>();
+        quickPick.title = 'Compilar (Visual FoxPro)';
+        quickPick.placeholder =
+            'Escolha uma opção — ou digite/cole o caminho de um arquivo ou pasta e tecle Enter';
+        quickPick.ignoreFocusOut = true;
+        quickPick.items = base;
+
+        let aceito: TargetPick | undefined;
+
+        quickPick.onDidChangeValue((value) => {
+            const digitado = resolveTypedTarget(value);
+            quickPick.items = digitado ? [digitado, ...base] : base;
+        });
+
+        quickPick.onDidAccept(() => {
+            const item = quickPick.selectedItems[0];
+            if (!item) {
+                return;
+            }
+            if (item.target === 'invalid') {
+                // Mantém a caixa aberta para o usuário corrigir o caminho.
+                vscode.window.showWarningMessage(`Caminho não encontrado: ${item.description}`);
+                return;
+            }
+            aceito = item;
+            quickPick.hide();
+        });
+
+        quickPick.onDidHide(() => {
+            quickPick.dispose();
+            resolve(aceito);
+        });
+
+        quickPick.show();
     });
-    if (!choice) {
+
+    if (!escolha) {
         return undefined;
     }
-    if (choice.target === 'active') {
+    if (escolha.target === 'active') {
         return [activeDoc!.fileName];
     }
+    if (escolha.target === 'typed') {
+        return [escolha.fsPath!];
+    }
 
-    const isFile = choice.target === 'file';
+    // O diálogo do sistema é aberto fora do handler do QuickPick, já com a caixa fechada.
+    const isFile = escolha.target === 'file';
     const selected = await vscode.window.showOpenDialog({
         canSelectFiles: isFile,
         canSelectFolders: !isFile,
