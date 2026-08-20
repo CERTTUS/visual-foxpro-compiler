@@ -1,6 +1,12 @@
 # Change Log
 
 
+## [1.6.3]
+
+- Feat: **cancelar deixou de ser definitivo**. Ao cancelar uma compilação em lote, a extensão informa quantos arquivos ficaram de fora e oferece **Retomar de onde parou** — a retomada reexecuta o mesmo núcleo apenas com o que faltava, em vez de recomeçar o build inteiro. O que já foi compilado permanece.
+- A pendência é registrada conforme o build avança. Arquivo a arquivo nos PR2, SQ2, RPT e projetos; **por pasta** no FoxBin2Prg, já que a sessão única do VFP9 não é interrompível no meio — uma pasta só sai da pendência depois de processada por inteiro, e uma retomada a refaz do começo.
+- O Output registra `[CANCELADO] N arquivo(s) não processado(s)`, e a retomada entra com o cabeçalho `=== Retomar compilação (N arquivo(s) restantes) ===`.
+
 ## [1.6.2]
 
 - Feat: o **Pausar/Retomar** passa a aparecer também como **botão na notificação**, ao lado da que mostra o arquivo sendo compilado — antes só existia o Cancelar ali, e o botão vivia apenas na barra de status. Clicar alterna o estado e a notificação reabre já com o rótulo oposto (`Pausar` ⇄ `Retomar`), mostrando o contador e o arquivo atual.

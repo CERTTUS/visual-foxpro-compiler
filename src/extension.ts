@@ -502,6 +502,17 @@ async function compileFileSet(
     let exeOk = 0;
     let exeFail = 0;
 
+    // O que ainda não foi processado. Se o build for cancelado, é o que sobra aqui que
+    // permite oferecer a retomada de onde parou, em vez de recomeçar do zero.
+    const pendentes = {
+        pr2: [...pr2Paths],
+        sq2: [...sq2Paths],
+        rpt: [...rpts],
+        texts: [...foxTexts],
+        pj2: [...pj2Projects],
+    };
+    let cancelado = false;
+
     // Pausa/retomada pela barra de status (a notificação de progresso não aceita
     // botões customizados; nela permanece apenas o Cancelar nativo).
     const pause = new PauseController(total);
@@ -533,6 +544,7 @@ async function compileFileSet(
              */
             const gate = async (): Promise<boolean> => {
                 if (token.isCancellationRequested) {
+                    cancelado = true;
                     return false;
                 }
                 if (pause.paused) {
@@ -540,6 +552,7 @@ async function compileFileSet(
                     outputChannel.appendLine(`[PAUSA] compilação pausada em ${done} / ${total}.`);
                     await pause.waitWhilePaused(token);
                     if (token.isCancellationRequested) {
+                        cancelado = true;
                         return false;
                     }
                     outputChannel.appendLine('[PAUSA] compilação retomada.');
@@ -561,6 +574,7 @@ async function compileFileSet(
                     return;
                 }
                 advance(path.basename(pr2Path));
+                pendentes.pr2.shift();
                 const result = await compilePr2File(pr2Path, compilerPath, convertEncoding);
                 if (result.success) {
                     pr2Ok++;
@@ -578,6 +592,7 @@ async function compileFileSet(
                     return;
                 }
                 advance(path.basename(sq2Path));
+                pendentes.sq2.shift();
                 const result = convertSq2File(sq2Path, convertEncoding);
                 if (result.success) {
                     sqlOk++;
@@ -594,6 +609,7 @@ async function compileFileSet(
                     return;
                 }
                 advance(path.basename(rptPath));
+                pendentes.rpt.shift();
                 let result;
                 try {
                     result = await convertRpt2Rpa(rptPath, context.extensionPath);
@@ -672,6 +688,10 @@ async function compileFileSet(
                         continue;
                     }
 
+                    // A sessão do VFP9 não é interrompível no meio: a pasta só sai da
+                    // pendência depois de processada por inteiro.
+                    pendentes.texts = pendentes.texts.filter((p) => !orderedFiles.includes(p));
+
                     // Feedback por arquivo (igual ao PR2), na ordem de compilação.
                     for (const f of orderedFiles) {
                         if (wasGenerated(f, startTime)) {
@@ -692,6 +712,7 @@ async function compileFileSet(
                     return;
                 }
                 advance(path.basename(pj2Path));
+                pendentes.pj2.shift();
                 let result: Pj2ExeResult;
                 try {
                     result = await runPj2Exe(pj2Path, context, config, outputChannel);
@@ -721,9 +742,71 @@ async function compileFileSet(
     outputChannel.appendLine('---');
     if (pr2Fail > 0 || sqlFail > 0 || rpaFail > 0 || exeFail > 0 || foxFail > 0 || foxWarn > 0) {
         vscode.window.showWarningMessage(summary);
-    } else {
+    } else if (!cancelado) {
         vscode.window.showInformationMessage(summary);
     }
+
+    if (cancelado) {
+        offerResume(pendentes, folders, context, outputChannel, config, progressTitle);
+    }
+}
+
+/**
+ * Após um cancelamento, oferece **retomar de onde parou**: reexecuta o mesmo núcleo
+ * apenas com o que ainda não foi processado, em vez de recomeçar o build inteiro.
+ *
+ * A oferta não é aguardada (`void`) de propósito: a compilação anterior já terminou e
+ * seu resumo já foi mostrado, então a retomada é uma execução nova, não um aninhamento.
+ */
+function offerResume(
+    pendentes: { pr2: string[]; sq2: string[]; rpt: string[]; texts: string[]; pj2: string[] },
+    folders: readonly vscode.WorkspaceFolder[],
+    context: vscode.ExtensionContext,
+    outputChannel: vscode.OutputChannel,
+    config: vscode.WorkspaceConfiguration,
+    progressTitle: string
+): void {
+    const restantes =
+        pendentes.pr2.length +
+        pendentes.sq2.length +
+        pendentes.rpt.length +
+        pendentes.texts.length +
+        pendentes.pj2.length;
+
+    outputChannel.appendLine(
+        `[CANCELADO] ${restantes} arquivo(s) não processado(s). O que já foi compilado permanece.`
+    );
+    outputChannel.appendLine('---');
+
+    if (restantes === 0) {
+        vscode.window.showInformationMessage('Compilação cancelada — todos os arquivos já haviam sido processados.');
+        return;
+    }
+
+    const RETOMAR = 'Retomar de onde parou';
+    void vscode.window
+        .showWarningMessage(
+            `Compilação cancelada — ${restantes} arquivo(s) não foram compilados.`,
+            RETOMAR
+        )
+        .then((escolha) => {
+            if (escolha !== RETOMAR) {
+                return;
+            }
+            // Os `.pj2` voltam junto dos demais textos: compileFileSet os separa de novo.
+            void compileFileSet(
+                pendentes.pr2,
+                [...pendentes.texts, ...pendentes.pj2],
+                pendentes.sq2,
+                pendentes.rpt,
+                folders,
+                context,
+                outputChannel,
+                config,
+                `${progressTitle} — retomando`,
+                `=== Retomar compilação (${restantes} arquivo(s) restantes) ===`
+            );
+        });
 }
 
 /** Executa o `git` no diretório informado e resolve com stdout e código de saída. */

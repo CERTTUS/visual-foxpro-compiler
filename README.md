@@ -68,6 +68,16 @@ Clicar em **Pausar** (na notificação ou na barra de status) alterna para **Ret
 
 O mesmo comando está na paleta como **`Visual FoxPro: Pausar/Retomar a compilação em andamento`** (visível apenas durante um build). A notificação de controle é separada da de progresso porque esta última, pela API do VS Code, não aceita botões além do Cancelar nativo. Se você dispensar a notificação de controle, ela não volta — o item da barra de status continua valendo.
 
+### Cancelar e retomar
+
+O **Cancelar** (`X` da notificação de progresso) não é definitivo: ao interromper, a extensão informa quantos arquivos ficaram de fora e oferece **Retomar de onde parou**.
+
+```
+Compilação cancelada — 287 arquivo(s) não foram compilados.   [ Retomar de onde parou ]
+```
+
+A retomada compila **apenas o que faltava** — o que já foi gerado permanece. A pendência é registrada arquivo a arquivo nos `.pr2`, `.sq2`, `.rpt` e projetos; nos textos FoxBin2Prg ela é **por pasta**, porque a sessão única do VFP9 não pode ser interrompida no meio: uma pasta só sai da pendência quando termina, e retomar refaz aquela pasta desde o início.
+
 A pausa acontece **entre arquivos** — o arquivo em processamento sempre termina — e vale inclusive **dentro da sessão única do VFP9** do FoxBin2Prg, que é a etapa mais demorada. **Cancelar tem precedência sobre pausar**: se você cancelar durante uma pausa, a espera é destravada e o build encerra. O tempo pausado não conta para o timeout da sessão do VFP9.
 
 > **CONST.FXP**: antes de compilar os PR2 (tanto no build quanto ao salvar um `.pr2`), a extensão verifica se o `CONST.FXP` existe na raiz do repositório. Se não existir e houver um `CONST.PR2`, ele é compilado primeiro — assim os PR2 que fazem `#INCLUDE CONST.PRG` não falham por constantes ausentes.
