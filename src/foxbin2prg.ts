@@ -132,13 +132,22 @@ export interface FoxBin2PrgFolderResult {
     message?: string;
 }
 
-/** Prioridade de tipo na compilação (menor = compila antes). */
+/**
+ * Prioridade de tipo na compilação (menor = compila antes), alinhada à ordem do
+ * `Build-Pj2BinarySet` do `vfp-compiler-installer`: classes antes dos formulários (que
+ * herdam delas), depois relatórios, labels, menus e bancos; o projeto por último, pois
+ * referencia todo o resto.
+ */
 function typeRank(ext: string): number {
     switch (ext.toLowerCase()) {
-        case '.vc2': return 0; // classes (antes dos formulários)
-        case '.sc2': return 1; // formulários
-        case '.pj2': return 3; // projeto por último (referencia tudo)
-        default: return 2;     // fr2, lb2, mn2, dc2
+        case '.vc2': return 1; // bibliotecas de classes
+        case '.sc2': return 2; // formulários
+        case '.fr2': return 3; // relatórios
+        case '.lb2': return 4; // labels
+        case '.mn2': return 5; // menus
+        case '.dc2': return 6; // bancos de dados
+        case '.pj2': return 9; // projeto (referencia tudo)
+        default: return 8;
     }
 }
 
@@ -166,7 +175,7 @@ export function orderFoxBin2PrgFiles(files: string[], vcxPriority: string[]): st
         if (ra !== rb) {
             return ra - rb;
         }
-        if (ra === 0) {
+        if (ra === 1) {
             const pa = prioIndex(a);
             const pb = prioIndex(b);
             if (pa !== pb) {
@@ -189,11 +198,16 @@ export function orderFoxBin2PrgFiles(files: string[], vcxPriority: string[]): st
  * `onProgress(processed, currentName)` é chamado periodicamente com a quantidade de
  * arquivos já processados pelo VFP9 e o nome do arquivo atual (acompanha o progresso
  * em tempo real durante a sessão única).
+ *
+ * `pauseFile` (opcional) permite pausar a sessão: enquanto esse arquivo existir, o VBS
+ * aguarda antes de processar o próximo item da lista. É o que dá efeito ao botão
+ * Pausar durante o trecho mais demorado do build.
  */
 export async function convertFilesOrdered(
     orderedFiles: string[],
     extensionPath: string,
-    onProgress?: (processed: number, currentName: string) => void
+    onProgress?: (processed: number, currentName: string) => void,
+    pauseFile?: string
 ): Promise<FoxBin2PrgFolderResult> {
     const { foxPath } = enginePaths(extensionPath);
     const listVbs = path.join(foxPath, 'Run-Bin2PrgList-VFP9.vbs');
@@ -228,8 +242,14 @@ export async function convertFilesOrdered(
     }
 
     try {
-        // Timeout amplo: toda a lista é processada numa só sessão do VFP9.
-        const { code, stderr } = await execCscript(foxPath, [listVbs, listFile, 'PRG2BIN', statusFile], 1800000);
+        // Timeout amplo: toda a lista é processada numa só sessão do VFP9. O tempo
+        // pausado não conta (o VBS fica aguardando o arquivo de pausa desaparecer).
+        const { code, stderr } = await execCscript(
+            foxPath,
+            [listVbs, listFile, 'PRG2BIN', statusFile, pauseFile ?? ''],
+            1800000,
+            pauseFile ? () => fs.existsSync(pauseFile) : undefined
+        );
         if (code !== 0) {
             return {
                 success: false,

@@ -12,6 +12,16 @@ import {
     FOXBIN2PRG_TEXT_EXTENSIONS,
 } from './foxbin2prg';
 import { convertRpt2Rpa, isRptFile } from './rpt2rpa';
+import { PauseController, registerPauseCommand } from './pause';
+import { buildExeFromPj2, isPj2File, Pj2ExeResult } from './pj2exe';
+import { materializeIncludes } from './includes';
+import {
+    buildDotNetProject,
+    isDotNetSource,
+    projectsForSources,
+    DOTNET_SOURCE_EXTENSIONS,
+    MsbuildResult,
+} from './msbuild';
 
 /** Ordem padrão de compilação das bibliotecas de classes (VC2), por nome. */
 const DEFAULT_VCX_ORDER = ['vclFormularios', 'vclComponentesBasicos', 'vclComponentesIntegrados'];
@@ -70,6 +80,11 @@ export function activate(context: vscode.ExtensionContext) {
             await runFoxBin2Prg(document, context, outputChannel, config);
             return;
         }
+
+        if (config.get<boolean>('enableMsbuild', true) && isDotNetSource(document.fileName)) {
+            await runMsbuild(document, outputChannel, config);
+            return;
+        }
     });
 
     const buildCmd = vscode.commands.registerCommand(
@@ -87,7 +102,22 @@ export function activate(context: vscode.ExtensionContext) {
         () => buildPulledFiles(context, outputChannel)
     );
 
-    context.subscriptions.push(disposable, buildCmd, buildChangedCmd, buildPulledCmd, outputChannel);
+    const buildTargetCmd = vscode.commands.registerCommand(
+        'visualFoxproCompiler.buildTarget',
+        (uri?: vscode.Uri, uris?: vscode.Uri[]) => buildTarget(context, outputChannel, uri, uris)
+    );
+
+    const togglePauseCmd = registerPauseCommand();
+
+    context.subscriptions.push(
+        disposable,
+        buildCmd,
+        buildChangedCmd,
+        buildPulledCmd,
+        buildTargetCmd,
+        togglePauseCmd,
+        outputChannel
+    );
     setupAutoCompileOnPull(context, outputChannel);
 }
 
@@ -115,11 +145,22 @@ function runCompiler(compilerPath: string, prgPath: string): Promise<{ error?: E
 async function compilePr2File(
     pr2Path: string,
     compilerPath: string,
-    convertEncoding: boolean
+    convertEncoding: boolean,
+    rootDir?: string,
+    outputChannel?: vscode.OutputChannel
 ): Promise<Pr2Result> {
     const writeResult = writePrgFromPr2(pr2Path, convertEncoding);
     if (!writeResult.success) {
         return { success: false, message: `Falha ao gerar .prg: ${writeResult.message}` };
+    }
+
+    // Materializa os #INCLUDE no caminho exato de cada diretiva. Sem isso o VFP não
+    // encontra o include e reescreve o path gravado no artefato compilado.
+    const includes = materializeIncludes(pr2Path, convertEncoding, rootDir);
+    if (outputChannel && includes.naoResolvidos.length > 0) {
+        outputChannel.appendLine(
+            `[AVISO] #INCLUDE sem .PR2 de origem em ${path.basename(pr2Path)}: ${includes.naoResolvidos.join(', ')}`
+        );
     }
 
     const prgPath = writeResult.prgPath;
@@ -172,7 +213,7 @@ async function ensureConstCompiled(
     }
 
     outputChannel.appendLine('CONST.FXP ausente — compilando CONST.PR2 (constantes) antes dos demais...');
-    const result = await compilePr2File(constPr2, compilerPath, convertEncoding);
+    const result = await compilePr2File(constPr2, compilerPath, convertEncoding, rootDir, outputChannel);
     if (result.success) {
         outputChannel.appendLine(`[OK]  PR2  ${constPr2}`);
     } else {
@@ -203,7 +244,8 @@ async function compilePr2(
         }
     }
 
-    const result = await compilePr2File(pr2Path, compilerPath, convertEncoding);
+    const wsRoot = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
+    const result = await compilePr2File(pr2Path, compilerPath, convertEncoding, wsRoot, outputChannel);
     outputChannel.appendLine(`Compilar (PR2) ${pr2Path}:`);
 
     if (!result.success) {
@@ -277,6 +319,31 @@ async function convertSq2(
 }
 
 /**
+ * Materializa os `#INCLUDE` de um conjunto de fontes antes do PRG2BIN. Os textos
+ * FoxBin2Prg (.sc2/.vc2/...) também trazem `#INCLUDE CONST.PRG` no código embutido, e
+ * o VFP reescreve o caminho gravado no binário se não encontrar o arquivo no ponto exato
+ * que a diretiva aponta.
+ */
+function prepararIncludes(
+    sources: string[],
+    convertEncoding: boolean,
+    rootDir: string | undefined,
+    outputChannel: vscode.OutputChannel
+): void {
+    const pendentes = new Set<string>();
+    for (const src of sources) {
+        for (const nome of materializeIncludes(src, convertEncoding, rootDir).naoResolvidos) {
+            pendentes.add(nome);
+        }
+    }
+    if (pendentes.size > 0) {
+        outputChannel.appendLine(
+            `[AVISO] #INCLUDE sem .PR2 de origem: ${[...pendentes].join(', ')} — o VFP pode reescrever o caminho no binário.`
+        );
+    }
+}
+
+/**
  * Fluxo FoxBin2Prg ao salvar: gera os binários VFP correspondentes (PRG2BIN)
  * via VFP9 instalado (COM) e o motor foxbin2prg embarcado em `bin/foxbin2prg`.
  */
@@ -296,6 +363,28 @@ async function runFoxBin2Prg(
         const convertEncoding = config.get<boolean>('convertEncodingBeforeCompile', true);
         await ensureConstCompiled(wsFolder.uri.fsPath, compilerPath, convertEncoding, outputChannel);
     }
+
+    // Projeto: o build do EXE já faz o PRG2BIN (com o HomeDir ajustado), então substitui
+    // a conversão simples quando `enablePj2Exe` está ativo.
+    if (isPj2File(textPath) && config.get<boolean>('enablePj2Exe', true)) {
+        const exe = await runPj2Exe(textPath, context, config, outputChannel);
+        reportPj2Exe(textPath, exe, outputChannel);
+        outputChannel.appendLine('---');
+        if (exe.success) {
+            vscode.window.setStatusBarMessage('EXE gerado', 10000);
+        } else {
+            vscode.window.showErrorMessage('Erro ao gerar o EXE do projeto.');
+            outputChannel.show(true);
+        }
+        return;
+    }
+
+    prepararIncludes(
+        [textPath],
+        config.get<boolean>('convertEncodingBeforeCompile', true),
+        wsFolder?.uri.fsPath,
+        outputChannel
+    );
 
     outputChannel.appendLine(`FoxBin2Prg (PRG2BIN): ${textPath}`);
     vscode.window.setStatusBarMessage('Gerando binário VFP (FoxBin2Prg)...', 5000);
@@ -324,6 +413,92 @@ async function runFoxBin2Prg(
     }
     outputChannel.appendLine('---');
     vscode.window.setStatusBarMessage('Binário VFP gerado', 10000);
+}
+
+/**
+ * Gera o `.EXE` de um projeto `.pj2` (PRG2BIN + BUILD EXE RECOMPILE, com a guarda de
+ * auto-include). O build usa o mouse — o `BUILD EXE` do VFP9 só roda com o auto-clique
+ * no diálogo "Locate File" — por isso o aviso antes de começar.
+ */
+async function runPj2Exe(
+    pj2Path: string,
+    context: vscode.ExtensionContext,
+    config: vscode.WorkspaceConfiguration,
+    outputChannel: vscode.OutputChannel
+): Promise<Pj2ExeResult> {
+    const wsFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(pj2Path));
+    const timeoutMinutes = config.get<number>('pj2ExeTimeoutMinutes', 15);
+
+    vscode.window.setStatusBarMessage(
+        `Gerando ${path.basename(pj2Path, path.extname(pj2Path))}.EXE — o build usará o mouse...`,
+        15000
+    );
+    outputChannel.appendLine(
+        `EXE (PJ2) ${pj2Path} — o VFP9 será aberto e o mouse usado para responder ao diálogo "Locate File".`
+    );
+
+    return buildExeFromPj2(pj2Path, {
+        extensionPath: context.extensionPath,
+        vfp9Path: config.get<string>('vfp9Path', '') || undefined,
+        timeoutMs: Math.max(1, timeoutMinutes) * 60000,
+        rootDir: wsFolder ? wsFolder.uri.fsPath : path.dirname(pj2Path),
+        convertEncoding: config.get<boolean>('convertEncodingBeforeCompile', true),
+        log: (m) => outputChannel.appendLine(m),
+    });
+}
+
+/** Opções do MSBuild a partir das configurações da extensão. */
+function msbuildOptions(
+    config: vscode.WorkspaceConfiguration,
+    outputChannel: vscode.OutputChannel
+) {
+    return {
+        msbuildPath: config.get<string>('msbuildPath', '') || undefined,
+        configuration: config.get<string>('msbuildConfiguration', 'Release'),
+        timeoutMs: Math.max(1, config.get<number>('msbuildTimeoutMinutes', 10)) * 60000,
+        log: (m: string) => outputChannel.appendLine(m),
+    };
+}
+
+/** Escreve no Output o resultado da compilação de um projeto .NET. */
+function reportMsbuild(result: MsbuildResult, outputChannel: vscode.OutputChannel): void {
+    if (result.success) {
+        outputChannel.appendLine(`[OK]  NET  ${result.project}`);
+    } else {
+        outputChannel.appendLine(`[ERRO] NET  ${result.project}: ${result.message ?? ''}`);
+    }
+}
+
+/**
+ * Fluxo .NET ao salvar: recompila, via MSBuild, o projeto que contém o arquivo salvo
+ * (`.vb`, `.resx`, `.vbproj`, ...). Sem isso o VFP continuaria chamando a DLL antiga.
+ */
+async function runMsbuild(
+    document: vscode.TextDocument,
+    outputChannel: vscode.OutputChannel,
+    config: vscode.WorkspaceConfiguration
+): Promise<void> {
+    const wsFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+    const root = wsFolder ? wsFolder.uri.fsPath : path.dirname(document.fileName);
+    const projetos = projectsForSources([document.fileName], root);
+    if (projetos.length === 0) {
+        outputChannel.appendLine(
+            `[AVISO] .vbproj não encontrado para ${path.basename(document.fileName)} — nada compilado.`
+        );
+        return;
+    }
+
+    outputChannel.appendLine(`MSBuild: ${projetos[0]}`);
+    vscode.window.setStatusBarMessage('Compilando projeto .NET (MSBuild)...', 5000);
+    const result = await buildDotNetProject(projetos[0], msbuildOptions(config, outputChannel));
+    reportMsbuild(result, outputChannel);
+    outputChannel.appendLine('---');
+    if (result.success) {
+        vscode.window.setStatusBarMessage('DLL gerada (MSBuild)', 10000);
+    } else {
+        vscode.window.showErrorMessage('Erro ao compilar o projeto .NET.');
+        outputChannel.show(true);
+    }
 }
 
 /** Glob (case-insensitive) das extensões de texto FoxBin2Prg, p.ex. `sc2,SC2,vc2,...`. */
@@ -363,8 +538,11 @@ async function buildWorkspace(
     const textUris = enableFoxBin2Prg
         ? await vscode.workspace.findFiles(`**/*.{${foxBin2PrgGlobExts()}}`, exclude)
         : [];
+    const netUris = config.get<boolean>('enableMsbuild', true)
+        ? await vscode.workspace.findFiles('**/*.{vbproj,VBPROJ}', exclude)
+        : [];
 
-    if (pr2Uris.length + sq2Uris.length + rptUris.length + textUris.length === 0) {
+    if (pr2Uris.length + sq2Uris.length + rptUris.length + textUris.length + netUris.length === 0) {
         vscode.window.showInformationMessage('Nenhum fonte FoxPro (.pr2/.sq2/.rpt/.sc2/.vc2/...) encontrado no repositório.');
         return;
     }
@@ -385,6 +563,7 @@ async function buildWorkspace(
         textUris.map((u) => u.fsPath),
         sq2Uris.map((u) => u.fsPath),
         rptUris.map((u) => u.fsPath),
+        netUris.map((u) => u.fsPath),
         folders,
         context,
         outputChannel,
@@ -400,12 +579,17 @@ async function buildWorkspace(
  * binários FoxBin2Prg numa única sessão do VFP9 por workspace folder (respeitando a
  * ordem VC2 antes de SC2). Usado por "Compilar todo o repositório" e por "Compilar
  * arquivos alterados (git)".
+ *
+ * Durante a execução, um item na barra de status permite pausar/retomar: a pausa vale
+ * entre os arquivos aqui e também dentro da sessão do VFP9 (via arquivo-flag lido pelo
+ * motor VBS). O cancelamento continua no botão nativo da notificação de progresso.
  */
 async function compileFileSet(
     pr2Paths: string[],
     textPaths: string[],
     sq2Paths: string[],
     rptPaths: string[],
+    dotNetProjects: string[],
     folders: readonly vscode.WorkspaceFolder[],
     context: vscode.ExtensionContext,
     outputChannel: vscode.OutputChannel,
@@ -417,11 +601,18 @@ async function compileFileSet(
     const enableFoxBin2Prg = config.get<boolean>('enableFoxBin2Prg', true);
     const vcxOrder = config.get<string[]>('vcxBuildOrder', DEFAULT_VCX_ORDER);
 
+    const enablePj2Exe = config.get<boolean>('enablePj2Exe', true);
+
     const texts = enableFoxBin2Prg ? textPaths : [];
+    // Projetos: com o build de EXE ativo, o `.pj2` sai do lote FoxBin2Prg e vai para o
+    // passo 3 — lá o PRG2BIN roda com o HomeDir ajustado, seguido do BUILD EXE.
+    const pj2Projects = enablePj2Exe ? texts.filter(isPj2File) : [];
+    const foxTexts = enablePj2Exe ? texts.filter((p) => !isPj2File(p)) : texts;
     // Os `.rpt` já vêm filtrados pelo chamador: "Compilar todo o repositório" respeita
     // `enableRpt2Rpa`; "Compilar alterados (git)" sempre inclui os `.rpt` alterados.
     const rpts = rptPaths;
-    const total = pr2Paths.length + texts.length + sq2Paths.length + rpts.length;
+    const dotNet = config.get<boolean>('enableMsbuild', true) ? dotNetProjects : [];
+    const total = pr2Paths.length + texts.length + sq2Paths.length + rpts.length + dotNet.length;
 
     const compilerPath = path.join(context.extensionPath, 'bin', 'visual-foxpro-compiler.exe');
 
@@ -437,8 +628,28 @@ async function compileFileSet(
     let foxOk = 0;
     let foxWarn = 0;
     let foxFail = 0;
+    let exeOk = 0;
+    let exeFail = 0;
+    let netOk = 0;
+    let netFail = 0;
 
-    await vscode.window.withProgress(
+    // O que ainda não foi processado. Se o build for cancelado, é o que sobra aqui que
+    // permite oferecer a retomada de onde parou, em vez de recomeçar do zero.
+    const pendentes = {
+        pr2: [...pr2Paths],
+        sq2: [...sq2Paths],
+        rpt: [...rpts],
+        texts: [...foxTexts],
+        pj2: [...pj2Projects],
+        net: [...dotNet],
+    };
+    let cancelado = false;
+
+    // Pausa/retomada pela barra de status: a notificação de progresso não aceita botões
+    // customizados e não permite renomear o Cancelar nativo, que continua sendo o dela.
+    const pause = new PauseController(total);
+
+    const buildRun = vscode.window.withProgress(
         {
             location: vscode.ProgressLocation.Notification,
             title: progressTitle,
@@ -449,9 +660,41 @@ async function compileFileSet(
             let done = 0;
             const report = (message: string) => progress.report({ message: `${done} / ${total} — ${message}` });
 
+            // Cancelar tem precedência sobre pausar: destrava a espera (inclusive a do VFP9).
+            token.onCancellationRequested(() => pause.resume());
+
+            /** Avança o contador em um arquivo, atualizando notificação e barra de status. */
+            const advance = (name: string) => {
+                done++;
+                progress.report({ increment: step, message: `${done} / ${total} — ${name}` });
+                pause.setProgress(done, total, name);
+            };
+
+            /**
+             * Barreira entre arquivos: aguarda enquanto pausado.
+             * Retorna `false` quando o build foi cancelado (o chamador deve encerrar).
+             */
+            const gate = async (): Promise<boolean> => {
+                if (token.isCancellationRequested) {
+                    cancelado = true;
+                    return false;
+                }
+                if (pause.paused) {
+                    report('pausado (retome na barra de status)');
+                    outputChannel.appendLine(`[PAUSA] compilação pausada em ${done} / ${total}.`);
+                    await pause.waitWhilePaused(token);
+                    if (token.isCancellationRequested) {
+                        cancelado = true;
+                        return false;
+                    }
+                    outputChannel.appendLine('[PAUSA] compilação retomada.');
+                }
+                return true;
+            };
+
             // 0) Garante o CONST.FXP na raiz de cada workspace folder (PR2 com #INCLUDE CONST.PRG).
             for (const folder of folders) {
-                if (token.isCancellationRequested) {
+                if (!(await gate())) {
                     return;
                 }
                 await ensureConstCompiled(folder.uri.fsPath, compilerPath, convertEncoding, outputChannel);
@@ -459,12 +702,21 @@ async function compileFileSet(
 
             // 1) PR2 -> PRG + FXP (arquivo a arquivo)
             for (const pr2Path of pr2Paths) {
-                if (token.isCancellationRequested) {
+                if (!(await gate())) {
                     return;
                 }
-                done++;
-                progress.report({ increment: step, message: `${done} / ${total} — ${path.basename(pr2Path)}` });
-                const result = await compilePr2File(pr2Path, compilerPath, convertEncoding);
+                advance(path.basename(pr2Path));
+                pendentes.pr2.shift();
+                const rootDoPr2 =
+                    folders.find((fo) => isUnder(pr2Path, fo.uri.fsPath))?.uri.fsPath ??
+                    folders[0]?.uri.fsPath;
+                const result = await compilePr2File(
+                    pr2Path,
+                    compilerPath,
+                    convertEncoding,
+                    rootDoPr2,
+                    outputChannel
+                );
                 if (result.success) {
                     pr2Ok++;
                     outputChannel.appendLine(`[OK]  PR2  ${pr2Path}`);
@@ -477,11 +729,11 @@ async function compileFileSet(
 
             // 1b) SQ2 -> SQL (Windows-1252), apenas conversão de encoding (sem compilação).
             for (const sq2Path of sq2Paths) {
-                if (token.isCancellationRequested) {
+                if (!(await gate())) {
                     return;
                 }
-                done++;
-                progress.report({ increment: step, message: `${done} / ${total} — ${path.basename(sq2Path)}` });
+                advance(path.basename(sq2Path));
+                pendentes.sq2.shift();
                 const result = convertSq2File(sq2Path, convertEncoding);
                 if (result.success) {
                     sqlOk++;
@@ -494,11 +746,11 @@ async function compileFileSet(
 
             // 1c) RPT -> RPA (texto), via GeradorDiferencasRelatorio embarcado (VFP9 + Crystal 11).
             for (const rptPath of rpts) {
-                if (token.isCancellationRequested) {
+                if (!(await gate())) {
                     return;
                 }
-                done++;
-                progress.report({ increment: step, message: `${done} / ${total} — ${path.basename(rptPath)}` });
+                advance(path.basename(rptPath));
+                pendentes.rpt.shift();
                 let result;
                 try {
                     result = await convertRpt2Rpa(rptPath, context.extensionPath);
@@ -516,18 +768,19 @@ async function compileFileSet(
 
             // 2) FoxBin2Prg -> binários VFP, respeitando a ordem (VC2 antes de SC2),
             //    em uma única sessão do VFP9 por workspace folder.
-            if (texts.length > 0) {
+            if (foxTexts.length > 0) {
                 for (const folder of folders) {
-                    if (token.isCancellationRequested) {
+                    if (!(await gate())) {
                         return;
                     }
                     const folderPath = folder.uri.fsPath;
-                    const filesInFolder = texts.filter((p) => isUnder(p, folderPath));
+                    const filesInFolder = foxTexts.filter((p) => isUnder(p, folderPath));
                     if (filesInFolder.length === 0) {
                         continue;
                     }
 
                     const orderedFiles = orderFoxBin2PrgFiles(filesInFolder, vcxOrder);
+                    prepararIncludes(orderedFiles, convertEncoding, folderPath, outputChannel);
 
                     // Progresso por arquivo durante a sessão única do VFP9.
                     const baseDone = done;
@@ -540,6 +793,7 @@ async function compileFileSet(
                                 increment: step * delta,
                                 message: `${done} / ${total} — ${currentName || 'FoxBin2Prg'}`,
                             });
+                            pause.setProgress(done, total, currentName);
                         }
                     };
 
@@ -549,7 +803,12 @@ async function compileFileSet(
                     const startTime = Date.now();
                     let res;
                     try {
-                        res = await convertFilesOrdered(orderedFiles, context.extensionPath, onProgress);
+                        res = await convertFilesOrdered(
+                            orderedFiles,
+                            context.extensionPath,
+                            onProgress,
+                            pause.pauseFile
+                        );
                     } catch (err) {
                         res = { success: false, count: orderedFiles.length, message: (err as Error).message };
                     }
@@ -559,6 +818,7 @@ async function compileFileSet(
                     if (finalDone > done) {
                         progress.report({ increment: step * (finalDone - done) });
                         done = finalDone;
+                        pause.setProgress(done, total);
                     }
 
                     if (!res.success) {
@@ -569,6 +829,10 @@ async function compileFileSet(
                         }
                         continue;
                     }
+
+                    // A sessão do VFP9 não é interrompível no meio: a pasta só sai da
+                    // pendência depois de processada por inteiro.
+                    pendentes.texts = pendentes.texts.filter((p) => !orderedFiles.includes(p));
 
                     // Feedback por arquivo (igual ao PR2), na ordem de compilação.
                     for (const f of orderedFiles) {
@@ -582,17 +846,147 @@ async function compileFileSet(
                     }
                 }
             }
+
+            // 3) PJ2 -> PJX + EXE (por último: o projeto referencia todo o resto, que já
+            //    foi regenerado acima). Um projeto por vez — o BUILD EXE abre o VFP9.
+            for (const pj2Path of pj2Projects) {
+                if (!(await gate())) {
+                    return;
+                }
+                advance(path.basename(pj2Path));
+                pendentes.pj2.shift();
+                let result: Pj2ExeResult;
+                try {
+                    result = await runPj2Exe(pj2Path, context, config, outputChannel);
+                } catch (err) {
+                    result = {
+                        success: false,
+                        refsRemovidas: [],
+                        binariosRegenerados: 0,
+                        message: (err as Error).message,
+                    };
+                }
+                if (result.success) {
+                    exeOk++;
+                } else {
+                    exeFail++;
+                }
+                reportPj2Exe(pj2Path, result, outputChannel);
+            }
+
+            // 4) Projetos .NET (VB.NET) via MSBuild — as DLLs que o VFP consome por COM.
+            for (const proj of dotNet) {
+                if (!(await gate())) {
+                    return;
+                }
+                advance(path.basename(proj));
+                let result: MsbuildResult;
+                try {
+                    result = await buildDotNetProject(proj, msbuildOptions(config, outputChannel));
+                } catch (err) {
+                    result = { success: false, project: proj, message: (err as Error).message };
+                }
+                if (result.success) {
+                    netOk++;
+                } else {
+                    netFail++;
+                }
+                pendentes.net.shift();
+                reportMsbuild(result, outputChannel);
+            }
         }
     );
 
-    const summary = `Compilação concluída: PR2 ${pr2Ok} ok / ${pr2Fail} erro(s); SQ2 ${sqlOk} ok / ${sqlFail} erro(s); RPT ${rpaOk} ok / ${rpaFail} erro(s); FoxBin2Prg ${foxOk} ok / ${foxWarn} aviso(s) / ${foxFail} erro(s).`;
+    try {
+        await buildRun;
+    } finally {
+        // Sempre remove o item da barra de status e o arquivo de pausa, mesmo em falha.
+        pause.dispose();
+    }
+
+    const exeResumo = pj2Projects.length > 0 ? ` EXE ${exeOk} ok / ${exeFail} erro(s);` : '';
+    const netResumo = dotNet.length > 0 ? ` .NET ${netOk} ok / ${netFail} erro(s);` : '';
+    const summary = `Compilação concluída: PR2 ${pr2Ok} ok / ${pr2Fail} erro(s); SQ2 ${sqlOk} ok / ${sqlFail} erro(s); RPT ${rpaOk} ok / ${rpaFail} erro(s);${exeResumo}${netResumo} FoxBin2Prg ${foxOk} ok / ${foxWarn} aviso(s) / ${foxFail} erro(s).`;
     outputChannel.appendLine(summary);
     outputChannel.appendLine('---');
-    if (pr2Fail > 0 || sqlFail > 0 || rpaFail > 0 || foxFail > 0 || foxWarn > 0) {
+    if (pr2Fail > 0 || sqlFail > 0 || rpaFail > 0 || exeFail > 0 || netFail > 0 || foxFail > 0 || foxWarn > 0) {
         vscode.window.showWarningMessage(summary);
-    } else {
+    } else if (!cancelado) {
         vscode.window.showInformationMessage(summary);
     }
+
+    if (cancelado) {
+        offerResume(pendentes, folders, context, outputChannel, config, progressTitle);
+    }
+}
+
+/**
+ * Após um cancelamento, oferece **retomar de onde parou**: reexecuta o mesmo núcleo
+ * apenas com o que ainda não foi processado, em vez de recomeçar o build inteiro.
+ *
+ * A oferta não é aguardada (`void`) de propósito: a compilação anterior já terminou e
+ * seu resumo já foi mostrado, então a retomada é uma execução nova, não um aninhamento.
+ */
+function offerResume(
+    pendentes: {
+        pr2: string[];
+        sq2: string[];
+        rpt: string[];
+        texts: string[];
+        pj2: string[];
+        net: string[];
+    },
+    folders: readonly vscode.WorkspaceFolder[],
+    context: vscode.ExtensionContext,
+    outputChannel: vscode.OutputChannel,
+    config: vscode.WorkspaceConfiguration,
+    progressTitle: string
+): void {
+    const restantes =
+        pendentes.pr2.length +
+        pendentes.sq2.length +
+        pendentes.rpt.length +
+        pendentes.texts.length +
+        pendentes.pj2.length +
+        pendentes.net.length;
+
+    outputChannel.appendLine(
+        `[CANCELADO] ${restantes} arquivo(s) não processado(s). O que já foi compilado permanece.`
+    );
+    outputChannel.appendLine('---');
+
+    if (restantes === 0) {
+        vscode.window.showInformationMessage('Compilação cancelada — todos os arquivos já haviam sido processados.');
+        return;
+    }
+
+    const RETOMAR = 'Retomar de onde parou';
+    void vscode.window
+        .showWarningMessage(
+            `Compilação cancelada — ${restantes} arquivo(s) não foram compilados.`,
+            RETOMAR
+        )
+        .then((escolha) => {
+            if (escolha !== RETOMAR) {
+                return;
+            }
+            // Os `.pj2` voltam junto dos demais textos: compileFileSet os separa de novo.
+            void compileFileSet(
+                pendentes.pr2,
+                [...pendentes.texts, ...pendentes.pj2],
+                pendentes.sq2,
+                pendentes.rpt,
+                pendentes.net,
+                folders,
+                context,
+                outputChannel,
+                config,
+                // Sem acumular sufixos: retomar uma retomada não vira
+                // "... — retomando — retomando".
+                `${progressTitle.replace(/ — retomando$/, '')} — retomando`,
+                `=== Retomar compilação (${restantes} arquivo(s) restantes) ===`
+            );
+        });
 }
 
 /** Executa o `git` no diretório informado e resolve com stdout e código de saída. */
@@ -715,8 +1109,23 @@ async function buildChangedFiles(
     const sq2Paths = changed.filter((p) => p.toLowerCase().endsWith('.sq2'));
     const rptPaths = changed.filter((p) => isRptFile(p));
     const textPaths = changed.filter((p) => isFoxBin2PrgText(p));
+    // A raiz é resolvida por arquivo: com múltiplos workspace folders, usar sempre o
+    // primeiro faria a busca pelo `.vbproj` subir a árvore errada e não achar o projeto.
+    const netProjects = [
+        ...new Set(
+            changed
+                .filter(isDotNetSource)
+                .flatMap((p) =>
+                    projectsForSources(
+                        [p],
+                        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(p))?.uri.fsPath ??
+                            path.dirname(p)
+                    )
+                )
+        ),
+    ];
 
-    if (pr2Paths.length + sq2Paths.length + rptPaths.length + textPaths.length === 0) {
+    if (pr2Paths.length + sq2Paths.length + rptPaths.length + textPaths.length + netProjects.length === 0) {
         vscode.window.showInformationMessage('Nenhum fonte FoxPro alterado (.pr2/.sq2/.rpt/.sc2/.vc2/...) segundo o git.');
         return;
     }
@@ -726,6 +1135,7 @@ async function buildChangedFiles(
         textPaths,
         sq2Paths,
         rptPaths,
+        netProjects,
         folders,
         context,
         outputChannel,
@@ -771,8 +1181,21 @@ async function buildPulledFiles(
     const sq2Paths = pulled.filter((p) => p.toLowerCase().endsWith('.sq2'));
     const rptPaths = pulled.filter((p) => isRptFile(p));
     const textPaths = pulled.filter((p) => isFoxBin2PrgText(p));
+    const netProjects = [
+        ...new Set(
+            pulled
+                .filter(isDotNetSource)
+                .flatMap((p) =>
+                    projectsForSources(
+                        [p],
+                        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(p))?.uri.fsPath ??
+                            path.dirname(p)
+                    )
+                )
+        ),
+    ];
 
-    if (pr2Paths.length + sq2Paths.length + rptPaths.length + textPaths.length === 0) {
+    if (pr2Paths.length + sq2Paths.length + rptPaths.length + textPaths.length + netProjects.length === 0) {
         vscode.window.showInformationMessage('Nenhum fonte FoxPro no último pull (.pr2/.sq2/.rpt/.sc2/.vc2/...).');
         return;
     }
@@ -782,12 +1205,353 @@ async function buildPulledFiles(
         textPaths,
         sq2Paths,
         rptPaths,
+        netProjects,
         folders,
         context,
         outputChannel,
         config,
         'Compilando do pull (Visual FoxPro)',
         '=== Compilar arquivos do pull (git) ==='
+    );
+}
+
+/** Extensões de fonte aceitas pelo comando "Compilar arquivo ou diretório". */
+const SUPPORTED_SOURCE_EXTENSIONS = [
+    '.pr2',
+    '.sq2',
+    '.rpt',
+    ...FOXBIN2PRG_TEXT_EXTENSIONS,
+    ...DOTNET_SOURCE_EXTENSIONS,
+];
+
+/** Pastas ignoradas ao varrer um diretório (espelha o exclude do build do repositório). */
+const SCAN_EXCLUDE_DIRS = new Set(['node_modules', '.git', 'foxbin2prg', 'rpt2rpa']);
+
+/** Indica se o arquivo é um fonte suportado (PR2/SQ2/RPT ou texto FoxBin2Prg). */
+function isSupportedSource(filePath: string): boolean {
+    return SUPPORTED_SOURCE_EXTENSIONS.includes(path.extname(filePath).toLowerCase());
+}
+
+/**
+ * Varre `dir` recursivamente e devolve os fontes suportados. Usa `fs` (e não
+ * `findFiles`) para que o comando funcione também em pastas fora do workspace.
+ * Symlinks de diretório não são seguidos (evita ciclos).
+ */
+function collectSources(dir: string, acc: string[] = []): string[] {
+    let entries: fs.Dirent[];
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return acc;
+    }
+    for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            if (!SCAN_EXCLUDE_DIRS.has(entry.name.toLowerCase())) {
+                collectSources(full, acc);
+            }
+        } else if (entry.isFile() && isSupportedSource(full)) {
+            acc.push(full);
+        }
+    }
+    return acc;
+}
+
+interface TargetPick extends vscode.QuickPickItem {
+    /** `kind` é reservado pelo QuickPickItem (separadores), daí o nome `target`. */
+    target: 'active' | 'file' | 'folder' | 'typed' | 'invalid';
+    /** Caminho já resolvido, quando o alvo foi digitado na própria caixa. */
+    fsPath?: string;
+}
+
+/**
+ * Interpreta o texto digitado na caixa como um caminho: aceita aspas em volta (o
+ * "Copiar como caminho" do Explorer do Windows as inclui) e caminhos relativos ao
+ * primeiro workspace folder. Devolve o item a ser oferecido no topo da lista.
+ */
+function resolveTypedTarget(value: string): TargetPick | undefined {
+    const raw = value.trim().replace(/^"+|"+$/g, '').trim();
+    if (!raw) {
+        return undefined;
+    }
+    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const abs = path.isAbsolute(raw)
+        ? path.normalize(raw)
+        : path.resolve(wsRoot ?? process.cwd(), raw);
+
+    let stat: fs.Stats;
+    try {
+        stat = fs.statSync(abs);
+    } catch {
+        return {
+            target: 'invalid',
+            label: '$(error) Caminho não encontrado',
+            description: abs,
+            alwaysShow: true,
+        };
+    }
+
+    if (stat.isDirectory()) {
+        return {
+            target: 'typed',
+            fsPath: abs,
+            label: `$(folder) Compilar pasta: ${abs}`,
+            detail: 'Todos os fontes da pasta, incluindo subpastas',
+            alwaysShow: true,
+        };
+    }
+    return {
+        target: 'typed',
+        fsPath: abs,
+        label: `$(file) Compilar arquivo: ${abs}`,
+        detail: isSupportedSource(abs)
+            ? 'Fonte Visual FoxPro suportado'
+            : 'Extensão não suportada — nada será compilado',
+        alwaysShow: true,
+    };
+}
+
+/**
+ * Pergunta o que compilar. Além das opções da lista (arquivo atual, arquivo(s) ou
+ * pasta, que abrem o diálogo do sistema), aceita o caminho **digitado ou colado** na
+ * própria caixa: nesse caso um item aparece no topo e o Enter compila direto, sem
+ * passar pelo diálogo.
+ *
+ * Usa `createQuickPick` (e não `showQuickPick`) justamente porque só assim dá para ler
+ * o texto digitado quando ele não corresponde a nenhuma opção da lista.
+ */
+async function pickBuildTargets(): Promise<string[] | undefined> {
+    const activeDoc = vscode.window.activeTextEditor?.document;
+    const base: TargetPick[] = [];
+    if (activeDoc && isSupportedSource(activeDoc.fileName)) {
+        base.push({
+            target: 'active',
+            label: `$(file-code) Arquivo atual: ${path.basename(activeDoc.fileName)}`,
+            detail: activeDoc.fileName,
+        });
+    }
+    base.push(
+        {
+            target: 'file',
+            label: '$(file) Escolher arquivo(s)...',
+            detail: 'Um ou mais fontes (.pr2, .sq2, .rpt, .sc2, .vc2, .fr2, ...)',
+        },
+        {
+            target: 'folder',
+            label: '$(folder) Escolher pasta...',
+            detail: 'Todos os fontes da pasta, incluindo subpastas',
+        }
+    );
+
+    const escolha = await new Promise<TargetPick | undefined>((resolve) => {
+        const quickPick = vscode.window.createQuickPick<TargetPick>();
+        quickPick.title = 'Compilar (Visual FoxPro)';
+        quickPick.placeholder =
+            'Escolha uma opção — ou digite/cole o caminho de um arquivo ou pasta e tecle Enter';
+        quickPick.ignoreFocusOut = true;
+        quickPick.items = base;
+
+        let aceito: TargetPick | undefined;
+
+        quickPick.onDidChangeValue((value) => {
+            const digitado = resolveTypedTarget(value);
+            quickPick.items = digitado ? [digitado, ...base] : base;
+        });
+
+        quickPick.onDidAccept(() => {
+            const item = quickPick.selectedItems[0];
+            if (!item) {
+                return;
+            }
+            if (item.target === 'invalid') {
+                // Mantém a caixa aberta para o usuário corrigir o caminho.
+                vscode.window.showWarningMessage(`Caminho não encontrado: ${item.description}`);
+                return;
+            }
+            aceito = item;
+            quickPick.hide();
+        });
+
+        quickPick.onDidHide(() => {
+            quickPick.dispose();
+            resolve(aceito);
+        });
+
+        quickPick.show();
+    });
+
+    if (!escolha) {
+        return undefined;
+    }
+    if (escolha.target === 'active') {
+        return [activeDoc!.fileName];
+    }
+    if (escolha.target === 'typed') {
+        return [escolha.fsPath!];
+    }
+
+    // O diálogo do sistema é aberto fora do handler do QuickPick, já com a caixa fechada.
+    const isFile = escolha.target === 'file';
+    const selected = await vscode.window.showOpenDialog({
+        canSelectFiles: isFile,
+        canSelectFolders: !isFile,
+        canSelectMany: isFile,
+        openLabel: 'Compilar',
+        title: isFile ? 'Selecione o(s) fonte(s) a compilar' : 'Selecione a pasta a compilar',
+        defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+        filters: isFile
+            ? {
+                'Fontes Visual FoxPro': SUPPORTED_SOURCE_EXTENSIONS.map((e) => e.slice(1)),
+                'Todos os arquivos': ['*'],
+            }
+            : undefined,
+    });
+    return selected?.map((u) => u.fsPath);
+}
+
+/**
+ * Workspace folders que cobrem os alvos escolhidos — usados para garantir o `CONST.FXP`
+ * e para agrupar a sessão do VFP9. Alvos dentro do workspace usam a raiz do repositório
+ * (onde o CONST vive); alvos fora dele ganham um folder sintético com a própria pasta.
+ */
+function foldersForTargets(targets: string[]): vscode.WorkspaceFolder[] {
+    const byRoot = new Map<string, vscode.WorkspaceFolder>();
+    for (const target of targets) {
+        const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(target));
+        if (folder) {
+            byRoot.set(folder.uri.fsPath, folder);
+            continue;
+        }
+        let isDir = false;
+        try {
+            isDir = fs.statSync(target).isDirectory();
+        } catch {
+            /* alvo inacessível: trata como arquivo */
+        }
+        const dir = isDir ? target : path.dirname(target);
+        if (!byRoot.has(dir)) {
+            byRoot.set(dir, { uri: vscode.Uri.file(dir), name: path.basename(dir) || dir, index: -1 });
+        }
+    }
+    return [...byRoot.values()];
+}
+
+/**
+ * Comando "Compilar arquivo ou diretório": compila um alvo escolhido pelo desenvolvedor
+ * — um arquivo, vários arquivos ou uma pasta inteira (recursiva). Pode ser acionado pela
+ * paleta (com diálogo de seleção) ou pelo menu de contexto do Explorer, que passa o(s)
+ * `Uri` selecionado(s).
+ *
+ * Diferença em relação aos outros comandos, quanto aos `.rpt`: um relatório escolhido
+ * diretamente sempre gera o `.RPA` (a escolha foi explícita); os encontrados ao varrer
+ * uma pasta respeitam `enableRpt2Rpa`, pois cada um pode levar dezenas de minutos.
+ */
+async function buildTarget(
+    context: vscode.ExtensionContext,
+    outputChannel: vscode.OutputChannel,
+    uri?: vscode.Uri,
+    uris?: vscode.Uri[]
+): Promise<void> {
+    const config = vscode.workspace.getConfiguration('visualFoxproCompiler');
+
+    let targets: string[];
+    if (uris && uris.length > 0) {
+        targets = uris.map((u) => u.fsPath);
+    } else if (uri) {
+        targets = [uri.fsPath];
+    } else {
+        const picked = await pickBuildTargets();
+        if (!picked || picked.length === 0) {
+            return;
+        }
+        targets = picked;
+    }
+
+    const enableRpt2Rpa = config.get<boolean>('enableRpt2Rpa', false);
+    const enableFoxBin2Prg = config.get<boolean>('enableFoxBin2Prg', true);
+
+    /** Fontes indicados um a um (não vindos da varredura de uma pasta). */
+    const explicit = new Set<string>();
+    const files: string[] = [];
+    const unsupported: string[] = [];
+
+    for (const target of targets) {
+        let stat: fs.Stats;
+        try {
+            stat = fs.statSync(target);
+        } catch {
+            outputChannel.appendLine(`[ERRO] Alvo inacessível: ${target}`);
+            continue;
+        }
+        if (stat.isDirectory()) {
+            collectSources(target, files);
+        } else if (isSupportedSource(target)) {
+            explicit.add(target);
+            files.push(target);
+        } else {
+            unsupported.push(target);
+        }
+    }
+
+    if (unsupported.length > 0) {
+        vscode.window.showWarningMessage(
+            `Ignorado(s) por extensão não suportada: ${unsupported.map((p) => path.basename(p)).join(', ')}`
+        );
+    }
+
+    const unique = [...new Set(files)];
+    const pr2Paths = unique.filter((p) => p.toLowerCase().endsWith('.pr2'));
+    const sq2Paths = unique.filter((p) => p.toLowerCase().endsWith('.sq2'));
+    const rptPaths = unique.filter((p) => isRptFile(p) && (explicit.has(p) || enableRpt2Rpa));
+    const textPaths = enableFoxBin2Prg ? unique.filter((p) => isFoxBin2PrgText(p)) : [];
+    const netProjects = config.get<boolean>('enableMsbuild', true)
+        ? projectsForSources(
+              unique.filter(isDotNetSource),
+              foldersForTargets(targets)[0]?.uri.fsPath ?? path.dirname(targets[0])
+          )
+        : [];
+
+    const rptSkipped = unique.filter((p) => isRptFile(p)).length - rptPaths.length;
+    if (rptSkipped > 0) {
+        outputChannel.appendLine(
+            `[INFO] ${rptSkipped} relatório(s) .rpt ignorado(s) na varredura da pasta — ative visualFoxproCompiler.enableRpt2Rpa para incluí-los (ou selecione o .rpt diretamente).`
+        );
+    }
+
+    const total =
+        pr2Paths.length + sq2Paths.length + rptPaths.length + textPaths.length + netProjects.length;
+    if (total === 0) {
+        vscode.window.showInformationMessage(
+            'Nenhum fonte FoxPro (.pr2/.sq2/.rpt/.sc2/.vc2/...) encontrado no alvo selecionado.'
+        );
+        return;
+    }
+
+    const label = targets.length === 1 ? targets[0] : `${targets.length} itens selecionados`;
+
+    if (config.get<boolean>('confirmBuildRepository', true) && total > 1) {
+        const pick = await vscode.window.showWarningMessage(
+            `Compilar ${label}? Serão processados ${pr2Paths.length} arquivo(s) .pr2, ${sq2Paths.length} arquivo(s) .sq2, ${rptPaths.length} relatório(s) .rpt ${textPaths.length} texto(s) FoxBin2Prg e ${netProjects.length} projeto(s) .NET. Binários existentes serão sobrescritos.`,
+            { modal: true },
+            'Compilar'
+        );
+        if (pick !== 'Compilar') {
+            return;
+        }
+    }
+
+    await compileFileSet(
+        pr2Paths,
+        textPaths,
+        sq2Paths,
+        rptPaths,
+        netProjects,
+        foldersForTargets(targets),
+        context,
+        outputChannel,
+        config,
+        'Compilando seleção (Visual FoxPro)',
+        `=== Compilar arquivo/diretório: ${label} ===`
     );
 }
 
@@ -883,6 +1647,20 @@ function setupAutoCompileOnPull(
     }
 
     void tryAutoCompileAfterPull(context, outputChannel);
+}
+
+/** Escreve no Output o resultado do build de EXE de um projeto. */
+function reportPj2Exe(pj2Path: string, result: Pj2ExeResult, outputChannel: vscode.OutputChannel): void {
+    if (result.success) {
+        const detalhes = [
+            result.binariosRegenerados > 0 ? `${result.binariosRegenerados} dep(s) regenerada(s)` : '',
+            result.refsRemovidas.length > 0 ? `${result.refsRemovidas.length} ref(s) stale ignorada(s)` : '',
+        ].filter(Boolean);
+        const extra = detalhes.length > 0 ? ` (${detalhes.join(', ')})` : '';
+        outputChannel.appendLine(`[OK]  EXE  ${result.exePath}${extra}`);
+    } else {
+        outputChannel.appendLine(`[ERRO] EXE  ${pj2Path}: ${result.message ?? ''}`);
+    }
 }
 
 /** Rótulo da extensão em maiúsculas para o log (ex.: `SC2`, `VC2`). */
