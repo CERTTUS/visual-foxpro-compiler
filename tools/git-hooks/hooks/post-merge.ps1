@@ -13,13 +13,14 @@ try {
     $repoRoot = (& git rev-parse --show-toplevel 2>$null).Trim()
     if (-not $repoRoot) { exit 0 }
 
-    $null = & git rev-parse --verify ORIG_HEAD 2>$null
-    if ($LASTEXITCODE -ne 0) { exit 0 }
+    $origHead = (& git -C $repoRoot rev-parse --verify ORIG_HEAD 2>$null).Trim()
+    if (-not $origHead) { exit 0 }
 
     $compilePattern = '\.(pr2|sc2|vc2|fr2|lb2|mn2|pj2|dc2|sq2|rpt)$'
+    # Uniao dos arquivos tocados em todos os commits do pull (nao so o diff liquido).
     $compileFiles = @(
-        & git -C $repoRoot -c core.quotepath=false diff --name-only ORIG_HEAD HEAD 2>$null |
-            Where-Object { $_ -match $compilePattern }
+        & git -C $repoRoot -c core.quotepath=false log "$origHead..HEAD" --name-only --pretty=format: --diff-filter=ACMR 2>$null |
+            Where-Object { $_ -and ($_ -match $compilePattern) }
     )
 
     if ($compileFiles.Count -eq 0) { exit 0 }
@@ -34,7 +35,7 @@ try {
     }
 
     $pending = Join-Path $gitDir 'certtus-compile-pull.pending'
-    New-Item -ItemType File -Path $pending -Force | Out-Null
+    Set-Content -Path $pending -Value $origHead -NoNewline -Encoding utf8
 
     Write-Host ''
     Write-Host '[Visual FoxPro Compiler] Compilacao automatica agendada.' -ForegroundColor Cyan

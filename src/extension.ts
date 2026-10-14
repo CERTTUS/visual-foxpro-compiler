@@ -1041,12 +1041,22 @@ async function getGitChangedFiles(folders: readonly vscode.WorkspaceFolder[]): P
     return [...result];
 }
 
+/** Referência base (SHA) gravada pelo hook post-merge para o último pull. */
+interface PullBaseOverride {
+    repoRoot: string;
+    baseRef: string;
+}
+
 /**
- * Coleta os arquivos trazidos pelo último merge/pull via `git diff ORIG_HEAD HEAD`.
- * O Git define ORIG_HEAD antes de merge e pull (fetch + merge). Devolve caminhos
- * absolutos de arquivos que ainda existem no disco (ignora deletados).
+ * Coleta os fontes tocados em **todos os commits** do último pull/merge (`base..HEAD`),
+ * não só o diff líquido entre duas árvores. Usa `git log --name-only` na faixa de
+ * revisões; o base padrão é `ORIG_HEAD` (HEAD antes do pull). Devolve caminhos absolutos
+ * que ainda existem no disco.
  */
-async function getGitPulledFiles(folders: readonly vscode.WorkspaceFolder[]): Promise<string[]> {
+async function getGitPulledFiles(
+    folders: readonly vscode.WorkspaceFolder[],
+    baseOverride?: PullBaseOverride
+): Promise<string[]> {
     const roots = new Set<string>();
     for (const folder of folders) {
         const r = await runGit(folder.uri.fsPath, ['rev-parse', '--show-toplevel']);
@@ -1057,11 +1067,22 @@ async function getGitPulledFiles(folders: readonly vscode.WorkspaceFolder[]): Pr
 
     const result = new Set<string>();
     for (const root of roots) {
-        const orig = await runGit(root, ['rev-parse', '--verify', 'ORIG_HEAD']);
+        const baseRef =
+            baseOverride?.repoRoot === root ? baseOverride.baseRef : 'ORIG_HEAD';
+        const orig = await runGit(root, ['rev-parse', '--verify', baseRef]);
         if (orig.code !== 0) {
             continue;
         }
-        const r = await runGit(root, ['-c', 'core.quotepath=false', 'diff', '--name-only', '-z', 'ORIG_HEAD', 'HEAD']);
+        const r = await runGit(root, [
+            '-c',
+            'core.quotepath=false',
+            'log',
+            `${baseRef}..HEAD`,
+            '--name-only',
+            '--pretty=format:',
+            '-z',
+            '--diff-filter=ACMR',
+        ]);
         if (r.code !== 0) {
             continue;
         }
@@ -1147,12 +1168,13 @@ async function buildChangedFiles(
 
 /**
  * Comando "Compilar arquivos do pull (git)": compila os fontes FoxPro que entraram no
- * último `git pull` / merge (diff ORIG_HEAD..HEAD). Ideal após atualizar main/develop
- * quando o working tree está limpo — o comando "alterados (git)" não os enxerga.
+ * último `git pull` / merge (todos os commits em `ORIG_HEAD..HEAD`). Ideal após atualizar
+ * main/develop quando o working tree está limpo — o comando "alterados (git)" não os enxerga.
  */
 async function buildPulledFiles(
     context: vscode.ExtensionContext,
-    outputChannel: vscode.OutputChannel
+    outputChannel: vscode.OutputChannel,
+    baseOverride?: PullBaseOverride
 ): Promise<void> {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
@@ -1162,9 +1184,28 @@ async function buildPulledFiles(
 
     const config = vscode.workspace.getConfiguration('visualFoxproCompiler');
 
+    let pullBase = baseOverride;
+    if (!pullBase) {
+        for (const folder of folders) {
+            const gitDir = await resolveGitDir(folder.uri.fsPath);
+            if (!gitDir) {
+                continue;
+            }
+            const baseRef = readPullPending(gitDir, false);
+            if (baseRef === null) {
+                continue;
+            }
+            const top = await runGit(folder.uri.fsPath, ['rev-parse', '--show-toplevel']);
+            if (top.code === 0 && top.stdout.trim()) {
+                pullBase = { repoRoot: top.stdout.trim(), baseRef };
+                break;
+            }
+        }
+    }
+
     let pulled: string[];
     try {
-        pulled = await getGitPulledFiles(folders);
+        pulled = await getGitPulledFiles(folders, pullBase);
     } catch (err) {
         vscode.window.showErrorMessage(`Falha ao consultar o git: ${(err as Error).message}`);
         return;
@@ -1565,17 +1606,27 @@ async function resolveGitDir(repoRoot: string): Promise<string | null> {
     return path.isAbsolute(gitDir) ? gitDir : path.resolve(repoRoot, gitDir);
 }
 
-/** Remove o sinal de pull pendente; retorna true se existia. */
-function consumePullPending(gitDir: string): boolean {
+/**
+ * Lê `.git/certtus-compile-pull.pending`. O hook grava o SHA de `ORIG_HEAD` no momento
+ * do pull; arquivos vazios (legado) usam `ORIG_HEAD` no momento da compilação.
+ * Com `consume: true`, remove o arquivo após ler.
+ */
+function readPullPending(gitDir: string, consume: boolean): string | null {
     const pending = path.join(gitDir, PULL_PENDING);
     if (!fs.existsSync(pending)) {
-        return false;
+        return null;
     }
     try {
-        fs.unlinkSync(pending);
-        return true;
+        const text = fs.readFileSync(pending, 'utf8').trim();
+        if (consume) {
+            fs.unlinkSync(pending);
+        }
+        if (/^[0-9a-f]{4,40}$/i.test(text)) {
+            return text;
+        }
+        return 'ORIG_HEAD';
     } catch {
-        return false;
+        return null;
     }
 }
 
@@ -1602,7 +1653,15 @@ async function tryAutoCompileAfterPull(
 
     for (const folder of folders) {
         const gitDir = await resolveGitDir(folder.uri.fsPath);
-        if (!gitDir || !consumePullPending(gitDir)) {
+        if (!gitDir) {
+            continue;
+        }
+        const baseRef = readPullPending(gitDir, true);
+        if (baseRef === null) {
+            continue;
+        }
+        const top = await runGit(folder.uri.fsPath, ['rev-parse', '--show-toplevel']);
+        if (top.code !== 0 || !top.stdout.trim()) {
             continue;
         }
 
@@ -1610,7 +1669,10 @@ async function tryAutoCompileAfterPull(
         try {
             outputChannel.appendLine('=== Compilação automática após git pull ===');
             vscode.window.setStatusBarMessage('Compilando fontes do git pull...', 8000);
-            await buildPulledFiles(context, outputChannel);
+            await buildPulledFiles(context, outputChannel, {
+                repoRoot: top.stdout.trim(),
+                baseRef,
+            });
         } finally {
             pullCompileInProgress = false;
         }

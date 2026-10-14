@@ -3,8 +3,9 @@
 
 ## [1.7.2]
 
+- Fix: **Compilar arquivos do pull (git)** passa a reunir os fontes tocados em **todos os commits** trazidos pelo último pull (`git log ORIG_HEAD..HEAD --name-only`), em vez de depender só do diff líquido entre duas árvores. O hook `post-merge` grava o SHA de `ORIG_HEAD` em `.git/certtus-compile-pull.pending` para a extensão usar a mesma base mesmo se `ORIG_HEAD` mudar depois.
 - Feat: **compilação automática após `git pull`**. O hook `post-merge` cria `.git/certtus-compile-pull.pending` quando o pull traz fontes VFP; a extensão detecta (via `fs.watch` e na ativação) e executa **Compilar arquivos do pull (git)**. Nova configuração `visualFoxproCompiler.autoCompileOnPull` (padrão: `true`). Opt-out por pull: `CERTTUS_SKIP_COMPILE_PULL=1 git pull`.
-- Feat: novo comando **`Visual FoxPro: Compilar arquivos do pull (git)`** (`visualFoxproCompiler.buildPulledFiles`). Compila os fontes FoxPro trazidos pelo último `git pull` / merge (`git diff --name-only -z ORIG_HEAD HEAD`), na mesma ordem de dependência dos demais comandos de build (incluindo projetos .NET). Resolve o caso em que o working tree está limpo após o pull — o comando "Compilar arquivos alterados (git)" não enxerga esses arquivos. Atalho padrão **`Ctrl+Shift+Alt+P`**.
+- Feat: novo comando **`Visual FoxPro: Compilar arquivos do pull (git)`** (`visualFoxproCompiler.buildPulledFiles`). Compila os fontes FoxPro trazidos pelo último `git pull` / merge (faixa `ORIG_HEAD..HEAD`, todos os commits), na mesma ordem de dependência dos demais comandos de build (incluindo projetos .NET). Resolve o caso em que o working tree está limpo após o pull — o comando "Compilar arquivos alterados (git)" não enxerga esses arquivos. Atalho padrão **`Ctrl+Shift+Alt+P`**.
 
 ## [1.7.1]
 
