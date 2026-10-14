@@ -2,7 +2,7 @@
   "name": "visual-foxpro-compiler",
   "displayName": "Visual Foxpro PR2 compiler",
   "description": "Ao salvar um .pr2: gera o .prg (UTF-8 para Windows-1252, se ativado) e compila para .FXP. Ao salvar um .sq2: gera o .SQL (modelagem PostgreSQL) convertendo UTF-8 para Windows-1252. Ao salvar .sc2/.vc2/.fr2/.lb2/.mn2/.pj2/.dc2: gera os binários VFP (PRG2BIN) via FoxBin2Prg embarcado. Ao compilar o repositório/alterados: gera o .RPA (texto) dos relatórios Crystal Reports (.rpt), se ativado.",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "publisher": "vfcompiler",
   "author": "Marco Plaza",
   "icon": "images/nfoxLogo.png",
@@ -45,7 +45,7 @@
         "visualFoxproCompiler.enableRpt2Rpa": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "No comando **Compilar todo o repositório**: gerar o arquivo texto **`.RPA`** de cada relatório do **Crystal Reports** (`.rpt`), usando o `GeradorDiferencasRelatorio` embarcado acionado pelo Visual FoxPro 9 (COM). O `.RPA` permite versionar/comparar os relatórios (binários) no controle de versão.\n\n**Desativado por padrão** (o build do repositório inteiro pode ser custoso e exige Crystal/banco).\n\n> **Importante:** esta opção **não** afeta o comando **Compilar arquivos alterados (git)** — nele, um `.rpt` novo/alterado **sempre** gera o `.RPA`, para versionar o diff do que mudou.\n\nRequer, além do VFP9: **Crystal Reports XI (11)** registrado (`CrystalRuntime.Application.11`); um arquivo `CFG\\CONEXAO.MEM` acessível a partir da pasta do `.rpt`; e conexão **PostgreSQL** ativa (a seção de SQL do relatório é resolvida contra o banco). Não há gatilho ao salvar — o `.rpt` é binário; a geração ocorre apenas nos comandos de build."
+          "markdownDescription": "No comando **Compilar todo o repositório**: gerar o arquivo texto **`.RPA`** de cada relatório do **Crystal Reports** (`.rpt`), usando o `GeradorDiferencasRelatorio` embarcado acionado pelo Visual FoxPro 9 (COM). O `.RPA` permite versionar/comparar os relatórios (binários) no controle de versão.\n\n**Desativado por padrão** (o build do repositório inteiro pode ser custoso e exige Crystal/banco).\n\n> **Importante:** esta opção **não** afeta os comandos **Compilar arquivos alterados (git)** nem **Compilar arquivos do pull (git)** — neles, um `.rpt` novo/alterado **sempre** gera o `.RPA`, para versionar o diff do que mudou.\n\nRequer, além do VFP9: **Crystal Reports XI (11)** registrado (`CrystalRuntime.Application.11`); um arquivo `CFG\\CONEXAO.MEM` acessível a partir da pasta do `.rpt`; e conexão **PostgreSQL** ativa (a seção de SQL do relatório é resolvida contra o banco). Não há gatilho ao salvar — o `.rpt` é binário; a geração ocorre apenas nos comandos de build."
         },
         "visualFoxproCompiler.enablePj2Exe": {
           "type": "boolean",
@@ -76,7 +76,10 @@
         "visualFoxproCompiler.msbuildConfiguration": {
           "type": "string",
           "default": "Release",
-          "enum": ["Release", "Debug"],
+          "enum": [
+            "Release",
+            "Debug"
+          ],
           "description": "Configuração usada ao compilar os projetos VB.NET."
         },
         "visualFoxproCompiler.msbuildTimeoutMinutes": {
@@ -101,6 +104,11 @@
             "vclComponentesIntegrados"
           ],
           "markdownDescription": "Ordem de compilação das bibliotecas de classes (VC2), por nome (sem extensão). Ao compilar o repositório, as VC2 são geradas antes das SC2 (formulários) e, entre si, nesta ordem; as demais VC2 seguem em ordem alfabética. Use os nomes das bibliotecas, ex.: `vclFormularios`, `vclComponentesBasicos`, `vclComponentesIntegrados`."
+        },
+        "visualFoxproCompiler.autoCompileOnPull": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Após `git pull`, compilar automaticamente os fontes FoxPro trazidos do remoto.\n\nRequer o hook **post-merge** instalado (`scripts/instalar-git-hooks.ps1` ou `core.hooksPath` em `tools/git-hooks/hooks`). O hook cria `.git/certtus-compile-pull.pending`; a extensão detecta e executa **Compilar arquivos do pull (git)**.\n\nPara pular em um pull específico: `CERTTUS_SKIP_COMPILE_PULL=1 git pull`."
         }
       }
     },
@@ -113,6 +121,11 @@
       {
         "command": "visualFoxproCompiler.buildChangedFiles",
         "title": "Compilar arquivos alterados (git)",
+        "category": "Visual FoxPro"
+      },
+      {
+        "command": "visualFoxproCompiler.buildPulledFiles",
+        "title": "Compilar arquivos do pull (git)",
         "category": "Visual FoxPro"
       },
       {
@@ -145,6 +158,10 @@
       {
         "command": "visualFoxproCompiler.buildChangedFiles",
         "key": "ctrl+shift+alt+s"
+      },
+      {
+        "command": "visualFoxproCompiler.buildPulledFiles",
+        "key": "ctrl+shift+alt+p"
       }
     ],
     "languages": [
@@ -193,15 +210,16 @@
     "iconv-lite": "^0.6.3"
   },
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
+    "@types/iconv-lite": "^0.0.1",
     "@types/mocha": "^10.0.8",
     "@types/node": "20.x",
+    "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^7.14.1",
     "@typescript-eslint/parser": "^7.11.0",
-    "eslint": "^8.57.0",
-    "typescript": "^5.4.5",
     "@vscode/test-cli": "^0.0.9",
     "@vscode/test-electron": "^2.4.0",
-    "@vscode/vsce": "^3.2.2"
+    "@vscode/vsce": "^3.2.2",
+    "eslint": "^8.57.0",
+    "typescript": "^5.4.5"
   }
 }

@@ -26,6 +26,11 @@ import {
 /** Ordem padrão de compilação das bibliotecas de classes (VC2), por nome. */
 const DEFAULT_VCX_ORDER = ['vclFormularios', 'vclComponentesBasicos', 'vclComponentesIntegrados'];
 
+/** Arquivo em `.git/` criado pelo hook post-merge após pull com fontes VFP. */
+const PULL_PENDING = 'certtus-compile-pull.pending';
+
+let pullCompileInProgress = false;
+
 /**
  * Renomeia o `.FXP` gerado para coincidir com maiúsculas/minúsculas do `.prg`
  * (no Windows o compilador pode criar extensão em caixa diferente).
@@ -92,6 +97,11 @@ export function activate(context: vscode.ExtensionContext) {
         () => buildChangedFiles(context, outputChannel)
     );
 
+    const buildPulledCmd = vscode.commands.registerCommand(
+        'visualFoxproCompiler.buildPulledFiles',
+        () => buildPulledFiles(context, outputChannel)
+    );
+
     const buildTargetCmd = vscode.commands.registerCommand(
         'visualFoxproCompiler.buildTarget',
         (uri?: vscode.Uri, uris?: vscode.Uri[]) => buildTarget(context, outputChannel, uri, uris)
@@ -103,10 +113,12 @@ export function activate(context: vscode.ExtensionContext) {
         disposable,
         buildCmd,
         buildChangedCmd,
+        buildPulledCmd,
         buildTargetCmd,
         togglePauseCmd,
         outputChannel
     );
+    setupAutoCompileOnPull(context, outputChannel);
 }
 
 interface Pr2Result {
@@ -1029,6 +1041,64 @@ async function getGitChangedFiles(folders: readonly vscode.WorkspaceFolder[]): P
     return [...result];
 }
 
+/** Referência base (SHA) gravada pelo hook post-merge para o último pull. */
+interface PullBaseOverride {
+    repoRoot: string;
+    baseRef: string;
+}
+
+/**
+ * Coleta os fontes tocados em **todos os commits** do último pull/merge (`base..HEAD`),
+ * não só o diff líquido entre duas árvores. Usa `git log --name-only` na faixa de
+ * revisões; o base padrão é `ORIG_HEAD` (HEAD antes do pull). Devolve caminhos absolutos
+ * que ainda existem no disco.
+ */
+async function getGitPulledFiles(
+    folders: readonly vscode.WorkspaceFolder[],
+    baseOverride?: PullBaseOverride
+): Promise<string[]> {
+    const roots = new Set<string>();
+    for (const folder of folders) {
+        const r = await runGit(folder.uri.fsPath, ['rev-parse', '--show-toplevel']);
+        if (r.code === 0 && r.stdout.trim()) {
+            roots.add(r.stdout.trim());
+        }
+    }
+
+    const result = new Set<string>();
+    for (const root of roots) {
+        const baseRef =
+            baseOverride?.repoRoot === root ? baseOverride.baseRef : 'ORIG_HEAD';
+        const orig = await runGit(root, ['rev-parse', '--verify', baseRef]);
+        if (orig.code !== 0) {
+            continue;
+        }
+        const r = await runGit(root, [
+            '-c',
+            'core.quotepath=false',
+            'log',
+            `${baseRef}..HEAD`,
+            '--name-only',
+            '--pretty=format:',
+            '-z',
+            '--diff-filter=ACMR',
+        ]);
+        if (r.code !== 0) {
+            continue;
+        }
+        for (const rel of r.stdout.split('\0')) {
+            if (!rel) {
+                continue;
+            }
+            const abs = path.resolve(root, rel);
+            if (fs.existsSync(abs)) {
+                result.add(abs);
+            }
+        }
+    }
+    return [...result];
+}
+
 /**
  * Comando "Compilar arquivos alterados (git)": compila apenas os fontes FoxPro que o
  * git reporta como modificados/criados (working tree + staged). Ideal após edições em
@@ -1093,6 +1163,96 @@ async function buildChangedFiles(
         config,
         'Compilando alterados (Visual FoxPro)',
         '=== Compilar arquivos alterados (git) ==='
+    );
+}
+
+/**
+ * Comando "Compilar arquivos do pull (git)": compila os fontes FoxPro que entraram no
+ * último `git pull` / merge (todos os commits em `ORIG_HEAD..HEAD`). Ideal após atualizar
+ * main/develop quando o working tree está limpo — o comando "alterados (git)" não os enxerga.
+ */
+async function buildPulledFiles(
+    context: vscode.ExtensionContext,
+    outputChannel: vscode.OutputChannel,
+    baseOverride?: PullBaseOverride
+): Promise<void> {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+        vscode.window.showErrorMessage('Abra uma pasta/repositório para compilar.');
+        return;
+    }
+
+    const config = vscode.workspace.getConfiguration('visualFoxproCompiler');
+
+    let pullBase = baseOverride;
+    if (!pullBase) {
+        for (const folder of folders) {
+            const gitDir = await resolveGitDir(folder.uri.fsPath);
+            if (!gitDir) {
+                continue;
+            }
+            const baseRef = readPullPending(gitDir, false);
+            if (baseRef === null) {
+                continue;
+            }
+            const top = await runGit(folder.uri.fsPath, ['rev-parse', '--show-toplevel']);
+            if (top.code === 0 && top.stdout.trim()) {
+                pullBase = { repoRoot: top.stdout.trim(), baseRef };
+                break;
+            }
+        }
+    }
+
+    let pulled: string[];
+    try {
+        pulled = await getGitPulledFiles(folders, pullBase);
+    } catch (err) {
+        vscode.window.showErrorMessage(`Falha ao consultar o git: ${(err as Error).message}`);
+        return;
+    }
+
+    if (pulled.length === 0) {
+        vscode.window.showInformationMessage(
+            'Nenhum arquivo detectado no último pull (ORIG_HEAD). Faça um git pull antes ou use "Compilar arquivos alterados (git)".'
+        );
+        return;
+    }
+
+    const pr2Paths = pulled.filter((p) => p.toLowerCase().endsWith('.pr2'));
+    const sq2Paths = pulled.filter((p) => p.toLowerCase().endsWith('.sq2'));
+    const rptPaths = pulled.filter((p) => isRptFile(p));
+    const textPaths = pulled.filter((p) => isFoxBin2PrgText(p));
+    const netProjects = [
+        ...new Set(
+            pulled
+                .filter(isDotNetSource)
+                .flatMap((p) =>
+                    projectsForSources(
+                        [p],
+                        vscode.workspace.getWorkspaceFolder(vscode.Uri.file(p))?.uri.fsPath ??
+                            path.dirname(p)
+                    )
+                )
+        ),
+    ];
+
+    if (pr2Paths.length + sq2Paths.length + rptPaths.length + textPaths.length + netProjects.length === 0) {
+        vscode.window.showInformationMessage('Nenhum fonte FoxPro no último pull (.pr2/.sq2/.rpt/.sc2/.vc2/...).');
+        return;
+    }
+
+    await compileFileSet(
+        pr2Paths,
+        textPaths,
+        sq2Paths,
+        rptPaths,
+        netProjects,
+        folders,
+        context,
+        outputChannel,
+        config,
+        'Compilando do pull (Visual FoxPro)',
+        '=== Compilar arquivos do pull (git) ==='
     );
 }
 
@@ -1434,6 +1594,121 @@ async function buildTarget(
         'Compilando seleção (Visual FoxPro)',
         `=== Compilar arquivo/diretório: ${label} ===`
     );
+}
+
+/** Resolve o diretório `.git` absoluto a partir da raiz do repositório. */
+async function resolveGitDir(repoRoot: string): Promise<string | null> {
+    const r = await runGit(repoRoot, ['rev-parse', '--git-dir']);
+    if (r.code !== 0 || !r.stdout.trim()) {
+        return null;
+    }
+    const gitDir = r.stdout.trim();
+    return path.isAbsolute(gitDir) ? gitDir : path.resolve(repoRoot, gitDir);
+}
+
+/**
+ * Lê `.git/certtus-compile-pull.pending`. O hook grava o SHA de `ORIG_HEAD` no momento
+ * do pull; arquivos vazios (legado) usam `ORIG_HEAD` no momento da compilação.
+ * Com `consume: true`, remove o arquivo após ler.
+ */
+function readPullPending(gitDir: string, consume: boolean): string | null {
+    const pending = path.join(gitDir, PULL_PENDING);
+    if (!fs.existsSync(pending)) {
+        return null;
+    }
+    try {
+        const text = fs.readFileSync(pending, 'utf8').trim();
+        if (consume) {
+            fs.unlinkSync(pending);
+        }
+        if (/^[0-9a-f]{4,40}$/i.test(text)) {
+            return text;
+        }
+        return 'ORIG_HEAD';
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Compila automaticamente após git pull quando o hook post-merge criou
+ * `.git/certtus-compile-pull.pending`. Também roda na ativação (pull com Cursor fechado).
+ */
+async function tryAutoCompileAfterPull(
+    context: vscode.ExtensionContext,
+    outputChannel: vscode.OutputChannel
+): Promise<void> {
+    const config = vscode.workspace.getConfiguration('visualFoxproCompiler');
+    if (!config.get<boolean>('autoCompileOnPull', true)) {
+        return;
+    }
+    if (pullCompileInProgress) {
+        return;
+    }
+
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+        return;
+    }
+
+    for (const folder of folders) {
+        const gitDir = await resolveGitDir(folder.uri.fsPath);
+        if (!gitDir) {
+            continue;
+        }
+        const baseRef = readPullPending(gitDir, true);
+        if (baseRef === null) {
+            continue;
+        }
+        const top = await runGit(folder.uri.fsPath, ['rev-parse', '--show-toplevel']);
+        if (top.code !== 0 || !top.stdout.trim()) {
+            continue;
+        }
+
+        pullCompileInProgress = true;
+        try {
+            outputChannel.appendLine('=== Compilação automática após git pull ===');
+            vscode.window.setStatusBarMessage('Compilando fontes do git pull...', 8000);
+            await buildPulledFiles(context, outputChannel, {
+                repoRoot: top.stdout.trim(),
+                baseRef,
+            });
+        } finally {
+            pullCompileInProgress = false;
+        }
+        return;
+    }
+}
+
+/** Observa `.git/` e dispara compilação quando o hook post-merge sinaliza um pull. */
+function setupAutoCompileOnPull(
+    context: vscode.ExtensionContext,
+    outputChannel: vscode.OutputChannel
+): void {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+        return;
+    }
+
+    for (const folder of folders) {
+        void resolveGitDir(folder.uri.fsPath).then((gitDir) => {
+            if (!gitDir) {
+                return;
+            }
+            try {
+                const watcher = fs.watch(gitDir, (_, filename) => {
+                    if (filename === PULL_PENDING) {
+                        void tryAutoCompileAfterPull(context, outputChannel);
+                    }
+                });
+                context.subscriptions.push({ dispose: () => watcher.close() });
+            } catch {
+                /* fs.watch pode falhar em alguns ambientes; ativação cobre o caso */
+            }
+        });
+    }
+
+    void tryAutoCompileAfterPull(context, outputChannel);
 }
 
 /** Escreve no Output o resultado do build de EXE de um projeto. */
